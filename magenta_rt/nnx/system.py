@@ -243,6 +243,42 @@ class MagentaRT2System:
         return self._style_model.tokenize(embedding)
 
     # -------------------------------------------------------------------
+    # Adapters (LoRA / DoRA)
+    # -------------------------------------------------------------------
+
+    def apply_lora_adapters(self, adapters_path, *, strength: float = 1.0) -> dict:
+        """Merge a portable LoRA/DoRA adapter into the base depthformer.
+
+        Loads a self-describing adapter safetensors (its rank/alpha/DoRA/targets
+        recipe is read from the file metadata), injects the matching wrappers,
+        loads the stored weights at ``strength``, then folds them into the base
+        kernels so the streaming step runs a plain depthformer — numerically
+        identical to a fine-tuned checkpoint, with ``strength`` baked in.
+
+        Call this before the first :meth:`generate` (which arms the KV cache):
+        merging into plain ``Linear`` layers keeps the cache and the jitted step
+        free of adapter structure.
+
+        Args:
+          adapters_path: Path to the adapter safetensors (absolute, or relative
+              to the checkpoints directory per the loader's resolution).
+          strength: Blend toward the base (``1.0`` = full adapter, ``0.0`` =
+              base; ``0.6``-``0.8`` is often best for a strong adapter).
+
+        Returns:
+          The adapter recipe metadata (``rank`` / ``alpha`` / ``dora`` /
+          ``targets`` / ...), as read from the file.
+        """
+        from ..sft.lora_io import load_lora_adapters
+        from ..sft.lora_nnx import merge_lora_into_base
+
+        meta = load_lora_adapters(
+            self._model.depthformer, str(adapters_path), strength=strength,
+        )
+        merge_lora_into_base(self._model.depthformer)
+        return meta
+
+    # -------------------------------------------------------------------
     # Generation
     # -------------------------------------------------------------------
 
