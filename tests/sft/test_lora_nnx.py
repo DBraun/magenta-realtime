@@ -33,6 +33,7 @@ from __future__ import annotations
 import os
 import sys
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -94,6 +95,23 @@ def _adapter_count(model):
 
 # ---- Adapter math ----------------------------------------------------------
 
+@pytest.fixture
+def exact_matmul():
+    """Contract fp32 matmuls exactly for the duration of a test.
+
+    The merge round-trip is an *algebraic* identity — folding the adapter into
+    the kernel cannot change the output — so it is asserted at a tight 1e-5.
+    Merged and unmerged forwards are different op sequences, though, and on
+    Ampere-class GPUs (and TPU) JAX contracts fp32 matmuls in TF32/bf16 by
+    default, whose ~1e-3 relative error swamps that bound. At default precision
+    the assertion measures the accelerator's matmul mode rather than the merge,
+    so pin precision here instead of loosening the tolerance — a real merge bug
+    worth ~1e-4 must still fail on CPU, where 1e-5 is achievable.
+    """
+    with jax.default_matmul_precision("highest"):
+        yield
+
+
 @pytest.mark.parametrize("dora", [False, True])
 def test_zero_init_identity_all_linears(dora):
     spec, model = _tiny_model()
@@ -105,10 +123,11 @@ def test_zero_init_identity_all_linears(dora):
     y1 = _fwd(model, src, tgt)
     # B=0 ⇒ LoRA delta is 0; DoRA's magnitude·W/‖W‖ = W. Identical to base at
     # step 0 (DoRA carries a tiny fp32 normalize/rescale rounding).
-    if dora:
-        assert jnp.allclose(y0, y1, atol=1e-4)
-    else:
-        assert jnp.array_equal(y0, y1)
+    # B=0 makes the delta exactly zero, but adding it still changes the op
+    # sequence, so the result differs by fp32 ulps on some backends. The claim
+    # is "the adapter is a no-op at init", not "the compiler emits identical
+    # code" — same tolerance the MLX twin uses.
+    assert jnp.allclose(y0, y1, atol=1e-4 if dora else 1e-5)
 
 
 @pytest.mark.parametrize("dora", [False, True])
@@ -119,10 +138,11 @@ def test_zero_init_identity_default_targets(dora):
     n = L.inject_lora(model, rank=4, alpha=8.0, dora=dora, seed=0)  # QKV default
     assert n > 0
     y1 = _fwd(model, src, tgt)
-    if dora:
-        assert jnp.allclose(y0, y1, atol=1e-4)
-    else:
-        assert jnp.array_equal(y0, y1)
+    # B=0 makes the delta exactly zero, but adding it still changes the op
+    # sequence, so the result differs by fp32 ulps on some backends. The claim
+    # is "the adapter is a no-op at init", not "the compiler emits identical
+    # code" — same tolerance the MLX twin uses.
+    assert jnp.allclose(y0, y1, atol=1e-4 if dora else 1e-5)
 
 
 @pytest.mark.parametrize("dora", [False, True])
@@ -184,7 +204,7 @@ def test_dora_magnitude_is_lora_param():
 
 @pytest.mark.parametrize("targets", [None, "all"])
 @pytest.mark.parametrize("dora", [False, True])
-def test_merge_round_trip(targets, dora):
+def test_merge_round_trip(targets, dora, exact_matmul):
     spec, model = _tiny_model(seed=1)
     src, tgt = _dummy_io(spec)
     tfn = L.all_linear_targets if targets == "all" else None
@@ -233,7 +253,7 @@ def test_merge_round_trip_bf16_compute(dora):
 
 
 @pytest.mark.parametrize("dora", [False, True])
-def test_merge_honors_lora_strength(dora):
+def test_merge_honors_lora_strength(dora, exact_matmul):
     """Merging after set_lora_strength bakes the blend in: a strength-dialed
     wrapped forward equals the merged forward at that same strength."""
     spec, model = _tiny_model(seed=4)

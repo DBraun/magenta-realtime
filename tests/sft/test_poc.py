@@ -557,5 +557,11 @@ def test_exact_resume_continues_data_stream(tmp_path):
     ckpt_mgr.close()
     resumed = run_steps(model, optimizer, step_fn, it, 3)
 
-    np.testing.assert_allclose(first, ref[:3], rtol=0, atol=0)
-    np.testing.assert_allclose(resumed, ref[3:], rtol=0, atol=0)
+    # Tolerance, not bitwise equality: GPU kernel selection/reduction order is
+    # not reproducible across processes, so an identical computation can drift a
+    # few 1e-4 in the loss (measured: 4e-4 absolute, 7.6e-5 relative, with the
+    # first step matching exactly). What this test exists to catch — a data
+    # stream that restarts or skips, or optimizer state that failed to restore —
+    # moves the loss by O(0.1-1), three orders of magnitude above this bound.
+    np.testing.assert_allclose(first, ref[:3], rtol=1e-3, atol=0)
+    np.testing.assert_allclose(resumed, ref[3:], rtol=1e-3, atol=0)

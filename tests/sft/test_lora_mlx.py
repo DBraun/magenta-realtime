@@ -193,7 +193,11 @@ def test_fuse_round_trip(targets, dora):
     # Merged model must equal the adapted one. Plain LoRA folds the same matmul
     # → bit-exact; DoRA's effective-weight forward vs einsum-with-folded-kernel
     # differ only by fp32 contraction order (tiny).
-    tol = 1e-4 if dora else 0.0
+    # 1e-5 (not 0.0) to match the NNX twin: Metal computes fp32 matmuls in
+    # fp32 so exact equality happens to hold here, but the property being
+    # asserted is algebraic, and a backend with reduced-precision
+    # accumulation would fail an exact bound for no real defect.
+    tol = 1e-4 if dora else 1e-5
     assert float(mx.max(mx.abs(y_wrapped - y_fused))) <= tol
     # No adapter modules remain — plain inference module again.
     remaining = [
