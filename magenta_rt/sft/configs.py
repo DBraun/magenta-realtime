@@ -219,6 +219,19 @@ class SFTConfig:
     early_stop_min_delta: float = 1e-4
     early_stop_patience: int = 5  # # validation rounds without improvement
     nan_check: bool = True        # short-circuit on loss==NaN/Inf
+    # How many *consecutive* non-finite losses to tolerate before stopping.
+    # 0 (the default) stops on the first, which is safe but lets a single bad
+    # batch end a multi-hour run. Pair with `skip_nonfinite_steps` so the bad
+    # step is skipped rather than survived-but-corrupting; persistent
+    # divergence still terminates.
+    nan_patience: int = 0
+    # If > 0, wrap the optimizer in `optax.apply_if_finite`: a step whose
+    # gradients are non-finite leaves the parameters and optimizer state
+    # untouched, and only after this many consecutive such steps does the NaN
+    # propagate. 0 (the default) leaves the transform unwrapped — the wrapper
+    # adds state, so turning it on changes the optimizer-state structure and
+    # existing checkpoints will not restore into it.
+    skip_nonfinite_steps: int = 0
 
     # I/O
 

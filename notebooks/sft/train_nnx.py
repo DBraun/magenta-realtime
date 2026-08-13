@@ -303,11 +303,33 @@ def _prune_adapter_files(output_dir: str, max_to_keep: int) -> None:
 
 
 def open_ckpt_manager(ckpt_dir: str, max_to_keep: int) -> ocp.CheckpointManager:
+    """Checkpoint manager whose retention keeps both the best *and* the latest.
+
+    Retention here serves two masters. `best_fn` selection wants the
+    metric-best checkpoints; auto-resume wants the newest one, because it keys
+    off `latest_step()`. Passing orbax's `best_fn`/`max_to_keep` options alone
+    maps to a `BestN` policy with no latest-checkpoint protection, so the newest
+    checkpoint is garbage-collected on any step where it is not among the best —
+    and since `resume` defaults to True, the next launch silently rolls back to
+    an older step and re-trains. Ranking is on training loss, which is noisy, so
+    the newest checkpoint frequently is not best.
+
+    `AnyPreservationPolicy` keeps a checkpoint if *either* policy wants it, so
+    the latest always survives alongside the `max_to_keep` best.
+    """
+    preservation_policy = ocp.checkpoint_managers.AnyPreservationPolicy([
+        ocp.checkpoint_managers.LatestN(n=1),
+        ocp.checkpoint_managers.BestN(
+            get_metric_fn=lambda m: m.get("loss", float("inf")),
+            # Matches orbax's own best_fn -> BestN mapping: checkpoints sort
+            # ascending and the last n are kept, so "min" flips the order.
+            reverse=True,
+            n=max_to_keep,
+        ),
+    ])
     options = ocp.CheckpointManagerOptions(
         save_interval_steps=1,
-        max_to_keep=max_to_keep,
-        best_fn=lambda m: m.get("loss", float("inf")),
-        best_mode="min",
+        preservation_policy=preservation_policy,
         enable_async_checkpointing=True,
     )
     return ocp.CheckpointManager(directory=os.path.abspath(ckpt_dir), options=options)
@@ -470,6 +492,13 @@ def build_optimizer(model, config: SFTConfig, *, wrt=nnx.Param) -> nnx.Optimizer
     tx = make_tx(learning_rate=lambda step: utils.lr_at_step(step, config))
     if config.gradient_accumulation_steps > 1:
         tx = optax.MultiSteps(tx, config.gradient_accumulation_steps)
+    if config.skip_nonfinite_steps > 0:
+        # A step with non-finite gradients is skipped — parameters and
+        # optimizer state stay untouched — instead of writing NaNs into the
+        # weights, which no amount of later recovery undoes. The NaN still
+        # propagates after this many *consecutive* bad steps, so persistent
+        # divergence surfaces rather than being papered over.
+        tx = optax.apply_if_finite(tx, max_consecutive_errors=config.skip_nonfinite_steps)
     return nnx.Optimizer(model, tx, wrt=wrt)
 
 
@@ -703,6 +732,7 @@ def train(config: SFTConfig, spec, *, writer=None, model=None,
     # Tracks the last step actually executed, so the summary below is honest
     # when early stopping (or an exception) ends the loop before total_steps.
     last_step = start_step
+    consecutive_nans = 0
     try:
         for step in range(start_step + 1, config.total_steps + 1):
             last_step = step
@@ -727,10 +757,20 @@ def train(config: SFTConfig, spec, *, writer=None, model=None,
             # window average (vs the single noisy step value).
             train_metrics.update(loss=metrics["loss"], grad_norm=metrics["grad_norm"])
 
-            # NaN / Inf short-circuit before we corrupt the checkpoint.
+            # NaN / Inf short-circuit before we corrupt the checkpoint. With
+            # `nan_patience > 0` an isolated bad batch is tolerated (pair it
+            # with `skip_nonfinite_steps` so that step does not move the
+            # weights); a run that keeps producing them still stops.
             if config.nan_check and not jnp.isfinite(metrics["loss"]):
-                print(f"[sft] non-finite loss at step {step} — stopping.")
-                break
+                consecutive_nans += 1
+                if consecutive_nans > config.nan_patience:
+                    print(f"[sft] non-finite loss at step {step} "
+                          f"({consecutive_nans} consecutive) — stopping.")
+                    break
+                print(f"[sft] non-finite loss at step {step} "
+                      f"({consecutive_nans}/{config.nan_patience}) — continuing.")
+            else:
+                consecutive_nans = 0
 
             if step % config.log_every_steps == 0:
                 summary = train_metrics.compute()  # window-averaged loss + grad_norm

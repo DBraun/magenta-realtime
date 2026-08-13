@@ -565,3 +565,31 @@ def test_exact_resume_continues_data_stream(tmp_path):
     # moves the loss by O(0.1-1), three orders of magnitude above this bound.
     np.testing.assert_allclose(first, ref[:3], rtol=1e-3, atol=0)
     np.testing.assert_allclose(resumed, ref[3:], rtol=1e-3, atol=0)
+
+
+def test_latest_checkpoint_survives_retention(tmp_path):
+    """Retention must keep the newest checkpoint, not just the metric-best ones.
+
+    Auto-resume keys off `latest_step()`. Ranking checkpoints by `best_fn`
+    alone maps to a `BestN` policy with no latest-checkpoint protection, so the
+    newest is garbage-collected on any step where it is not among the best —
+    and the next launch silently rolls back to an older step and re-trains.
+    Training loss is noisy, so "newest is not best" is the common case, not a
+    corner one.
+    """
+    import orbax.checkpoint as ocp
+
+    mgr = sft.open_ckpt_manager(str(tmp_path / "ckpt"), max_to_keep=2)
+    # Loss gets monotonically worse, so the latest step is never metric-best.
+    for step, loss in [(1, 1.0), (2, 2.0), (3, 3.0), (4, 4.0)]:
+        mgr.save(
+            step,
+            args=ocp.args.StandardSave({"x": np.array([float(step)])}),
+            metrics={"loss": loss},
+        )
+    mgr.wait_until_finished()
+    kept = sorted(mgr.all_steps())
+    mgr.close()
+
+    assert 4 in kept, f"latest checkpoint was collected (kept {kept}); resume would roll back"
+    assert kept == [1, 2, 4], f"expected the 2 best + the latest, got {kept}"
