@@ -35,7 +35,7 @@ then **[Watch your run](#watch-your-run-tensorboard--wavs)**.
 | `earlystop.py`   | `EarlyStopper` (min-delta + patience). |
 | `wandb_writer.py`| Optional Weights & Biases `MetricWriter` for the `MultiWriter` stack. |
 | `tb_writer.py`   | TF-free TensorBoard writer (`tensorboardX`) for the MLX trainer (`clu`/TensorFlow aborts co-resident with Metal). |
-| `trainer_common.py` | Backend-neutral trainer glue: the `tyro` CLI over `SFTConfig` (`TrainCLI`), warmup→rsqrt LR schedule, dataset factories, logging setup. |
+| `trainer_common.py` | Backend-neutral trainer glue: the `argbind` CLI over `SFTConfig` (`TrainCLI`), warmup→rsqrt LR schedule, dataset factories, logging setup. |
 
 ## Quick start
 
@@ -84,9 +84,15 @@ Linen-format checkpoint that loads on every inference backend. Knobs:
 drop `--lora_rank` for full (encoder-frozen) SFT.
 
 Every `SFTConfig` field is a flag — `--help` lists them all (the CLI is built
-from the dataclass with [tyro](https://brentyi.github.io/tyro/)). Boolean flags
-are `--flag` / `--no-flag` (e.g. `--lora_dora`, `--no-freeze_encoder`), not
-`--flag true`.
+from the dataclass with
+[argbind](https://pypi.org/project/argbind-dbraun/)). Boolean flags take either
+the bare form or an explicit value: `--lora_dora` and `--lora_dora True` are the
+same, and you turn one off with `--freeze_encoder False` (there is no
+`--no-flag` spelling).
+
+argbind also gives every run a reproducible config: `--args.save run.yml` writes
+the exact arguments used, and `--args.load run.yml` replays them (command-line
+flags still win over the file, so you can replay a run with one value changed).
 
 ### 3. Watch it train
 

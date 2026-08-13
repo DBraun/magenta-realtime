@@ -44,17 +44,21 @@ from magenta_rt.sft.configs import SFTConfig
 
 
 # ---------------------------------------------------------------------------
-# CLI parsing (tyro over SFTConfig) + model-spec resolution
+# CLI parsing (argbind over SFTConfig) + model-spec resolution
 # ---------------------------------------------------------------------------
 #
-# The CLI is the config dataclass itself. ``tyro.cli(TrainCLI)`` derives one
-# typed flag per field — ``--batch_size 4``, ``--lora_dora/--no-lora_dora``,
-# ``--checkpoint path`` — with ``--help`` text pulled from each field's comment,
+# The CLI is the config dataclass itself. ``argbind.bind(TrainCLI)`` derives one
+# flag per field — ``--batch_size 4``, ``--lora_dora``, ``--checkpoint path`` —
 # so there is no flag list to keep in sync with ``SFTConfig`` (the failure mode
-# of the old hand-rolled argparse). Underscore *and* hyphen spellings both
-# parse, so existing ``--lora_rank``-style invocations keep working; the one
-# change from the argparse era is that bools are now ``--flag/--no-flag`` rather
-# than ``--flag true``.
+# of the old hand-rolled argparse). ``without_prefix=True`` keeps the flags bare
+# rather than argbind's default ``--TrainCLI.batch_size`` namespacing.
+#
+# Bools accept both the bare ``--lora_dora`` and an explicit ``--lora_dora False``;
+# there is no ``--no-flag`` spelling (use ``--freeze_encoder False``).
+#
+# argbind also adds ``--args.save out.yml`` / ``--args.load in.yml``, which is
+# the reason to prefer it here: a run's exact configuration can be written out
+# and replayed verbatim, and it is the same config mechanism ``audiotree`` uses.
 
 
 @dataclasses.dataclass
@@ -80,14 +84,29 @@ def to_sft_config(cli: SFTConfig) -> SFTConfig:
 
 
 def parse_train_cli(cli_cls=TrainCLI, argv=None):
-    """``tyro.cli`` over ``cli_cls`` (a ``TrainCLI`` subclass); returns the instance.
+    """argbind over ``cli_cls`` (a ``TrainCLI`` subclass); returns the instance.
 
-    tyro is imported lazily so merely importing this module (e.g. in tests that
-    only want the LR schedule or dataset factory) doesn't require it.
+    argbind is imported lazily so merely importing this module (e.g. in tests
+    that only want the LR schedule or dataset factory) doesn't require it.
+
+    ``argbind.parse_args`` reads ``sys.argv`` directly, so an explicit ``argv``
+    is applied by swapping it for the duration of the parse (keeping the
+    program name in slot 0) and restoring it afterwards.
     """
-    import tyro
+    import argbind
 
-    return tyro.cli(cli_cls, args=argv)
+    bound = argbind.bind(cli_cls, without_prefix=True)
+    if argv is None:
+        args = argbind.parse_args()
+    else:
+        saved_argv = sys.argv
+        sys.argv = [saved_argv[0], *argv]
+        try:
+            args = argbind.parse_args()
+        finally:
+            sys.argv = saved_argv
+    with argbind.scope(args):
+        return bound()
 
 
 def resolve_spec(model_name: str, *, tiny_cls, lookup):

@@ -46,20 +46,24 @@ dependencies = [
 ]
 
 [tool.uv]
-# tyro (in the [sft] extra) declares typeguard>=4, but `recurrentgemma` — a base
-# dep, pulled in everywhere via the vendored sequence-layers — uses jaxtyping's
-# old `typeguard.typechecked` pattern, which breaks under ANY typeguard>=3: its
+# NOTE(typeguard): typeguard is held at 2.x by the direct `typeguard==2.13.3`
+# pin above, and must stay there — `recurrentgemma` (a base dep, pulled in
+# everywhere via the vendored sequence-layers) uses jaxtyping's old
+# `typeguard.typechecked` pattern, which breaks under ANY typeguard>=3: its
 # `*batch`-style shape annotations make typeguard's AST instrumentor raise
 # `SyntaxError: invalid syntax` at import, taking down `sequence_layers.jax`/`.mlx`
-# (and thus most of the mlx_pure/nnx parity suite). tyro works fine on typeguard
-# 2.x for our CLI use, so override its pin and hold the whole env below 3.
+# (and thus most of the mlx_pure/nnx parity suite). This used to additionally
+# need a `typeguard<3` override to beat down tyro's `typeguard>=4`; the [sft]
+# extra now uses `argbind-dbraun` (deps: pyyaml + docstring-parser only), so
+# nothing asks for typeguard>=3 and the direct pin alone suffices. Re-check if a
+# new dependency ever pulls typeguard.
 #
 # `absl-py`: `recurrentgemma` pins `absl-py>=1,<2` while `audiotree>=1.0` requires
 # `absl-py>=2.0`, so the two are unresolvable together without help. absl-py 2.x is
 # API-compatible with the surface recurrentgemma actually uses (flags/logging), and
 # its `<2` cap is a conservative upper bound rather than a known incompatibility, so
 # take the newer one for the whole env.
-override-dependencies = ["typeguard<3", "absl-py>=2.0"]
+override-dependencies = ["absl-py>=2.0"]
 
 [tool.uv.sources]
 # NOTE(vendoring): submodule moved to magenta_rt/_vendor/sequence-layers.
@@ -86,13 +90,14 @@ dev = ["jupyter", "ipython", "pytest", "matplotlib", "pytest-cov"]
 
 # Supervised fine-tuning (the trainer drivers under notebooks/sft/). Pair with a
 # backend extra, e.g. `pip install magenta-rt[jax,sft]` (nnx) or `[mlx,sft]`.
-# `tyro` builds the trainer CLIs from `SFTConfig`; `tensorboardX` is the TF-free
+# `argbind-dbraun` builds the trainer CLIs from `SFTConfig` (and gives
+# `--args.save`/`--args.load` YAML replay); `tensorboardX` is the TF-free
 # TensorBoard writer for the MLX trainer (see below). `wandb` is optional (logging).
 # NOTE: `clu` (TensorBoard metric writers, nnx-only) pulls in TensorFlow, which
 # aborts when co-resident with JAX/MLX in one process — so the trainers import it
 # lazily and the SFT tests run in a separate CI job. The MLX trainer uses
 # `tensorboardX` precisely to avoid that TF co-residence abort.
-sft = ["grain", "orbax-checkpoint", "tyro", "tensorboardX", "tqdm"]
+sft = ["grain", "orbax-checkpoint", "argbind-dbraun>=0.6.0", "tensorboardX", "tqdm"]
 
 # Listener-eval bulk generation
 eval = [
