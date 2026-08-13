@@ -87,7 +87,20 @@ class FixedEmbed(nnx.Module):
         self.features = features
         self.max_length = max_length
         self.dtype = dtype
-        self.embedding = nnx.data(jnp.asarray(sinusoidal_embeddings(max_length, features)))
+        self.materialize_constants()
+
+    def materialize_constants(self) -> None:
+        """(Re)compute the position table from ``max_length``/``features``.
+
+        The table is derived rather than trained, so it is not an ``nnx.Param``
+        and no checkpoint carries it. A model built with ``nnx.eval_shape``
+        therefore has it abstract with nothing to restore it — and
+        ``assert_fully_loaded`` will not flag it, precisely because it is not a
+        parameter. See :mod:`magenta_rt.nnx.checkpoint_utils`.
+        """
+        self.embedding = nnx.data(
+            jnp.asarray(sinusoidal_embeddings(self.max_length, self.features))
+        )
 
     def init_cache(self):
         """Initialize the position index cache for autoregressive decoding."""

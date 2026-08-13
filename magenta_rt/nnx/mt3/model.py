@@ -448,6 +448,16 @@ class MT3(nnx.Module):
         )
         return logits.astype(cfg.dtype)
 
+    def materialize_constants(self) -> None:
+        """Rebuild the derived constants an abstract build cannot restore.
+
+        Part of the contract for loading into a model built with
+        ``nnx.eval_shape`` (see :mod:`magenta_rt.nnx.checkpoint_utils`); here
+        that is the encoder and decoder sinusoidal position tables.
+        """
+        self.encoder.fixed_embed.materialize_constants()
+        self.decoder.fixed_embed.materialize_constants()
+
     def init_cache(self, batch_size: int, max_decode_length: Optional[int] = None):
         """Initialize the autoregressive decoding cache.
 
