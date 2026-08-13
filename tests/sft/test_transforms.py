@@ -60,17 +60,17 @@ def _tgt_cfg(codebook_size=32, num_extra_tokens=6):
 
 def test_encode_skips_when_codes_present():
     codec = _FakeCodec()
-    wav = AudioTree(np.zeros((2, 2, 64), np.float32), 48000,
+    audio = AudioTree(np.zeros((2, 2, 64), np.float32), 48000,
                     codes=np.full((2, 4, 4), 7, np.int32))
-    out = T.EncodeWithCodec(codec).map(wav)
+    out = T.EncodeWithCodec(codec).map(audio)
     assert codec.calls == 0  # no-op: codes already present
-    assert np.array_equal(out.codes, wav.codes)
+    assert np.array_equal(out.codes, audio.codes)
 
 
 def test_encode_runs_when_codes_absent():
     codec = _FakeCodec(num_codebooks=4)
-    wav = _audio_wav(B=2, nsamp=64)
-    out = T.EncodeWithCodec(codec).map(wav)
+    audio = _audio_wav(B=2, nsamp=64)
+    out = T.EncodeWithCodec(codec).map(audio)
     assert codec.calls == 1
     assert codec.last_waveform.shape == (2, 2, 64)  # got the [B, C, T] audio
     assert out.codes.shape == (2, 64 // 16, 4)
@@ -78,11 +78,11 @@ def test_encode_runs_when_codes_absent():
 
 def test_encode_waveform_fn_adapts_layout():
     codec = _FakeCodec()
-    wav = _audio_wav(B=1, nsamp=32, ch=2)
+    audio = _audio_wav(B=1, nsamp=32, ch=2)
     # e.g. downmix to mono [B, 1, nsamp] before the codec
     out = T.EncodeWithCodec(
         codec, waveform_fn=lambda w: w.mean(axis=1, keepdims=True)
-    ).map(wav)
+    ).map(audio)
     assert codec.last_waveform.shape == (1, 1, 32)
     assert out.codes is not None
 
@@ -92,8 +92,8 @@ def test_encode_waveform_fn_adapts_layout():
 def test_prepare_target_offsets():
     cfg = _tgt_cfg(codebook_size=32, num_extra_tokens=6)
     codes = np.arange(2 * 3 * 4, dtype=np.int32).reshape(2, 3, 4) % 32
-    wav = AudioTree(np.zeros((2, 2, 16), np.float32), 48000, codes=codes)
-    out = T.PrepareTarget(cfg).map(wav)
+    audio = AudioTree(np.zeros((2, 2, 16), np.float32), 48000, codes=codes)
+    out = T.PrepareTarget(cfg).map(audio)
     target = out.extras["target"]
     expected = codes + np.arange(4) * 32 + 6
     assert np.array_equal(target, expected)
@@ -127,8 +127,8 @@ def test_prepare_source_concatenates_and_offsets():
         "a": np.ones((1, 5, 2), np.int32),
         "b": np.full((1, 5, 3), 4, np.int32),
     }
-    wav = AudioTree(np.zeros((1, 2, 80), np.float32), 48000, extras=meta)
-    out = T.PrepareSource(cfgs).random_map(wav, np.random.default_rng(0))
+    audio = AudioTree(np.zeros((1, 2, 80), np.float32), 48000, extras=meta)
+    out = T.PrepareSource(cfgs).random_map(audio, np.random.default_rng(0))
     source = out.extras["source"]
     assert source.shape == (1, 5, 5)  # 2 + 3 channels concatenated
     # offsets: a -> +2 (num_extra=1 + 1), b -> +3 (num_extra=2 + 1)
@@ -140,8 +140,8 @@ def test_prepare_source_concatenates_and_offsets():
 
 def test_augment_batch_encodes_then_prepares_target():
     codec = _FakeCodec(num_codebooks=4)
-    wav = _audio_wav(B=2, nsamp=64)
-    out = T.augment_batch(None, wav, [T.EncodeWithCodec(codec), T.PrepareTarget(_tgt_cfg())])
+    audio = _audio_wav(B=2, nsamp=64)
+    out = T.augment_batch(None, audio, [T.EncodeWithCodec(codec), T.PrepareTarget(_tgt_cfg())])
     assert codec.calls == 1
     assert out.codes is not None and "target" in out.extras
     assert out.extras["target"].shape == out.codes.shape
@@ -149,18 +149,18 @@ def test_augment_batch_encodes_then_prepares_target():
 
 def test_augment_batch_uses_present_codes():
     codec = _FakeCodec()
-    wav = AudioTree(np.zeros((2, 2, 64), np.float32), 48000,
+    audio = AudioTree(np.zeros((2, 2, 64), np.float32), 48000,
                     codes=(np.arange(2 * 4 * 4).reshape(2, 4, 4) % 32).astype(np.int32))
-    out = T.augment_batch(None, wav, [T.EncodeWithCodec(codec), T.PrepareTarget(_tgt_cfg())])
+    out = T.augment_batch(None, audio, [T.EncodeWithCodec(codec), T.PrepareTarget(_tgt_cfg())])
     assert codec.calls == 0  # used existing codes, no GPU encode
     assert "target" in out.extras
 
 
 def test_augment_batch_random_map_gets_rng():
     cfgs = (SimpleNamespace(key="a", rvq_truncation_level=2, dropout_prob=None, num_extra_tokens=1),)
-    wav = AudioTree(np.zeros((1, 2, 80), np.float32), 48000,
+    audio = AudioTree(np.zeros((1, 2, 80), np.float32), 48000,
                     extras={"a": np.ones((1, 5, 2), np.int32)})
-    out = T.augment_batch(np.random.default_rng(0), wav, [T.PrepareSource(cfgs)])
+    out = T.augment_batch(np.random.default_rng(0), audio, [T.PrepareSource(cfgs)])
     assert "source" in out.extras
 
 
@@ -205,8 +205,8 @@ def test_crop_token_mode_is_aligned():
     n, cf = 10, 4
     codes = np.tile(np.arange(n)[None, :, None], (1, 1, 4)).astype(np.int32)  # frame i = i
     cond = np.tile(np.arange(n)[None, :, None], (1, 1, 3)).astype(np.int32)
-    wav = AudioTree(None, 48000, codes=codes, extras={"cond": cond})
-    out = T.AudioTreeRandomCrop(cf).random_map(wav, np.random.default_rng(0))
+    audio = AudioTree(None, 48000, codes=codes, extras={"cond": cond})
+    out = T.AudioTreeRandomCrop(cf).random_map(audio, np.random.default_rng(0))
     assert out.codes.shape == (1, cf, 4) and out.extras["cond"].shape == (1, cf, 3)
     start = int(out.codes[0, 0, 0])
     # contiguous crop, and metadata cropped at the SAME start (aligned).
@@ -219,8 +219,8 @@ def test_crop_audio_mode_aligns_samples_to_frames():
     # Audio sample t = t, on both channels; channel-major [1, 2, n*spf].
     waveform = np.tile(np.arange(n * spf)[None, None, :], (1, 2, 1)).astype(np.float32)
     cond = np.tile(np.arange(n)[None, :, None], (1, 1, 3)).astype(np.int32)
-    wav = AudioTree(waveform, 48000, extras={"cond": cond})  # codes=None (audio mode)
-    out = T.AudioTreeRandomCrop(cf).random_map(wav, np.random.default_rng(1))
+    audio = AudioTree(waveform, 48000, extras={"cond": cond})  # codes=None (audio mode)
+    out = T.AudioTreeRandomCrop(cf).random_map(audio, np.random.default_rng(1))
     assert out.waveform.shape == (1, 2, cf * spf) and out.extras["cond"].shape == (1, cf, 3)
     fstart = int(out.extras["cond"][0, 0, 0])
     assert int(out.waveform[0, 0, 0]) == fstart * spf  # audio crop aligned to frame crop
@@ -228,9 +228,9 @@ def test_crop_audio_mode_aligns_samples_to_frames():
 
 def test_crop_pads_short_examples():
     n, cf = 3, 5
-    wav = AudioTree(None, 48000, codes=np.ones((1, n, 4), np.int32),
+    audio = AudioTree(None, 48000, codes=np.ones((1, n, 4), np.int32),
                     extras={"cond": np.ones((1, n, 3), np.int32)})
-    out = T.AudioTreeRandomCrop(cf).random_map(wav, np.random.default_rng(0))
+    out = T.AudioTreeRandomCrop(cf).random_map(audio, np.random.default_rng(0))
     assert out.codes.shape == (1, cf, 4) and out.extras["cond"].shape == (1, cf, 3)
     assert np.array_equal(out.codes[0, n:], np.zeros((cf - n, 4), np.int32))  # zero-padded
 
@@ -239,16 +239,16 @@ def test_sticky_repeats_frames():
     from magenta_rt.config import MUSICCOCA
 
     mulan = np.arange(5 * 2).reshape(1, 5, 2).astype(np.int32)  # distinct frames
-    wav = AudioTree(None, 48000, extras={MUSICCOCA.key: mulan})
-    out = T.AudioTreeMusicCoCaSticky(1.0).random_map(wav, np.random.default_rng(0))
+    audio = AudioTree(None, 48000, extras={MUSICCOCA.key: mulan})
+    out = T.AudioTreeMusicCoCaSticky(1.0).random_map(audio, np.random.default_rng(0))
     sticky = out.extras[MUSICCOCA.key]
     # fully sticky (prob=1.0) -> every frame collapses to frame 0.
     assert np.array_equal(sticky[0], np.tile(mulan[0, 0], (5, 1)))
 
 
 def test_sticky_noop_without_musiccoca_channel():
-    wav = AudioTree(None, 48000, codes=np.zeros((1, 5, 4), np.int32))
-    out = T.AudioTreeMusicCoCaSticky(0.5).random_map(wav, np.random.default_rng(0))
+    audio = AudioTree(None, 48000, codes=np.zeros((1, 5, 4), np.int32))
+    out = T.AudioTreeMusicCoCaSticky(0.5).random_map(audio, np.random.default_rng(0))
     assert out.extras == {}
 
 

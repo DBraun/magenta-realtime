@@ -46,8 +46,8 @@ def _example(frames=50, with_cfg=False):
 
 
 def test_samples_missing_channels_constant_over_frames():
-    wav = _example(frames=50)
-    out = PrepareCFG().random_map(wav, np.random.default_rng(0))
+    audio = _example(frames=50)
+    out = PrepareCFG().random_map(audio, np.random.default_rng(0))
 
     mc = out.extras[_KEY_MC_NOTES]
     drums = out.extras[_KEY_DRUMS]
@@ -72,8 +72,8 @@ def test_sampling_varies_across_examples():
 
 
 def test_present_channels_pass_through():
-    wav = _example(with_cfg=True)
-    out = PrepareCFG().random_map(wav, np.random.default_rng(0))
+    audio = _example(with_cfg=True)
+    out = PrepareCFG().random_map(audio, np.random.default_rng(0))
     np.testing.assert_array_equal(out.extras[_KEY_MC_NOTES], 7)
     np.testing.assert_array_equal(out.extras[_KEY_DRUMS], 3)
 
@@ -101,9 +101,9 @@ def test_fixed_scales_wrong_width_raises():
 
 
 def test_no_configured_channels_is_identity():
-    wav = _example()
-    out = PrepareCFG(cfg_configs=()).random_map(wav, np.random.default_rng(0))
-    assert out is wav
+    audio = _example()
+    out = PrepareCFG(cfg_configs=()).random_map(audio, np.random.default_rng(0))
+    assert out is audio
 
 
 def test_full_mrt2_input_configs_through_export(tmp_path):

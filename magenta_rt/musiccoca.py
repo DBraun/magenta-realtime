@@ -27,7 +27,7 @@ prompt1 = style_model.embed_text('Foo')              # [embedding_dim]
 prompt2 = style_model.embed_text('Bar')
 tokens = style_model.tokenize(np.mean([prompt1, prompt2], axis=0))
 # Batches: embed_text(['Foo', 'Bar']) -> [2, dim];
-#          embed_audio(audio_tree)    -> [B, dim]  (AudioTree carries the batch)
+#          embed_audio(audio)    -> [B, dim]  (AudioTree carries the batch)
 ```
 """
 

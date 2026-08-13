@@ -591,7 +591,7 @@ def _build_excerpt_dataset(
     # it on the final waveform before the near-silence filter — otherwise
     # ``lufs`` is None and the filter raises on ``lufs[0]``.
     ds = ds.map(AudioTree.replace_lufs)
-    ds = ds.filter(lambda audio_tree: audio_tree.lufs[0] > -60.)
+    ds = ds.filter(lambda audio: audio.lufs[0] > -60.)
     # Optional per-excerpt level normalization, applied AFTER the near-silence
     # filter (so quiet noise isn't boosted to full level) and BEFORE encoding.
     # Accepts a grain ``RandomMap`` (e.g. ``audiotree.transforms.volume_norm``

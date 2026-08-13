@@ -54,8 +54,8 @@ from magenta_rt import MagentaRT2MlxPure  # = mlx_pure.system.MagentaRT2System
 
 mrt = MagentaRT2MlxPure(size="mrt2_small", bits=4)  # optional int4/int8
 embedding = mrt.embed_style("disco funk")
-audio_tree, state = mrt.generate(style=embedding, frames=25)   # 1 second
-audio_tree, state = mrt.generate(style=embedding, frames=25, state=state)  # continue
+audio, state = mrt.generate(style=embedding, frames=25)   # 1 second
+audio, state = mrt.generate(style=embedding, frames=25, state=state)  # continue
 ```
 
 CFG uses the trained conditioning tokens (the `cfgs` channels), like the

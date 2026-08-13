@@ -18,8 +18,8 @@ Mirrors the ``magenta_rt.jax`` / ``magenta_rt.mlx`` system API::
 
     mrt = MagentaRT2System(size='mrt2_small')
     embedding = mrt.embed_style('disco funk')
-    audio_tree, state = mrt.generate(style=embedding, frames=25)
-    audio_tree, state = mrt.generate(style=embedding, frames=25, state=state)
+    audio, state = mrt.generate(style=embedding, frames=25)
+    audio, state = mrt.generate(style=embedding, frames=25, state=state)
 
 Like those systems, CFG uses the *trained conditioning tokens* (the ``cfgs``
 channels) with batch = N styles. The classifier-free-guidance logit-mixing
@@ -87,7 +87,7 @@ class MagentaRT2System:
 
         mrt = MagentaRT2System(size='mrt2_small', bits=4)
         embedding = mrt.embed_style('disco funk')
-        audio_tree, state = mrt.generate(style=embedding, frames=25)
+        audio, state = mrt.generate(style=embedding, frames=25)
     """
 
     def __init__(

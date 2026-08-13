@@ -182,9 +182,9 @@ def generate_jax(
         cfg_musiccoca=cfg_musiccoca,
         cfg_notes=cfg_notes,
     )
-    audio_tree, _ = mrt.generate(style=style_embedding, frames=frames)
+    audio, _ = mrt.generate(style=style_embedding, frames=frames)
     # AudioTree waveform is channel-major [N, C, T].
-    waveform = np.asarray(audio_tree.waveform)
+    waveform = np.asarray(audio.waveform)
     compute_dtype = str(getattr(mrt, "compute_dtype", "unknown"))
     return waveform[0], compute_dtype
 

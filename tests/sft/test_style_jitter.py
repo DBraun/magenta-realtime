@@ -64,17 +64,17 @@ def test_rvq_tokenize_matches_nnx_quantizer(codebooks):
 
 
 def test_zero_std_is_identity(codebooks):
-    wav = _example(codebooks)
+    audio = _example(codebooks)
     out = StyleEmbeddingJitter(0.0, codebooks=codebooks).random_map(
-        wav, np.random.default_rng(0)
+        audio, np.random.default_rng(0)
     )
-    assert out is wav
+    assert out is audio
 
 
 def test_jitter_rewrites_tokens_consistently(codebooks):
-    wav = _example(codebooks)
+    audio = _example(codebooks)
     out = StyleEmbeddingJitter(2.0, codebooks=codebooks).random_map(
-        wav, np.random.default_rng(0)
+        audio, np.random.default_rng(0)
     )
     emb = out.extras["musiccoca_embedding"]
     tokens = out.extras[_MUSICCOCA.key]
@@ -84,34 +84,34 @@ def test_jitter_rewrites_tokens_consistently(codebooks):
     np.testing.assert_array_equal(tokens[0, 0], rvq_tokenize(emb[0], codebooks))
     np.testing.assert_array_equal(tokens, np.tile(tokens[:, :1], (1, FRAMES, 1)))
     # Large jitter on a tiny codebook should move at least one level.
-    assert not np.array_equal(tokens, wav.extras[_MUSICCOCA.key])
+    assert not np.array_equal(tokens, audio.extras[_MUSICCOCA.key])
 
 
 def test_tiny_jitter_keeps_tokens(codebooks):
     """RVQ cells are coarse: negligible noise re-quantizes to the same row."""
-    wav = _example(codebooks)
+    audio = _example(codebooks)
     out = StyleEmbeddingJitter(1e-6, codebooks=codebooks).random_map(
-        wav, np.random.default_rng(0)
+        audio, np.random.default_rng(0)
     )
     np.testing.assert_array_equal(
-        out.extras[_MUSICCOCA.key], wav.extras[_MUSICCOCA.key]
+        out.extras[_MUSICCOCA.key], audio.extras[_MUSICCOCA.key]
     )
 
 
 def test_noop_without_embedding(codebooks):
-    wav = _example(codebooks)
-    wav = wav.replace(
-        extras={_MUSICCOCA.key: wav.extras[_MUSICCOCA.key]}
+    audio = _example(codebooks)
+    audio = audio.replace(
+        extras={_MUSICCOCA.key: audio.extras[_MUSICCOCA.key]}
     )
     out = StyleEmbeddingJitter(2.0, codebooks=codebooks).random_map(
-        wav, np.random.default_rng(0)
+        audio, np.random.default_rng(0)
     )
-    assert out is wav
+    assert out is audio
 
 
 def test_prob_zero_is_noop(codebooks):
-    wav = _example(codebooks)
+    audio = _example(codebooks)
     out = StyleEmbeddingJitter(2.0, prob=0.0, codebooks=codebooks).random_map(
-        wav, np.random.default_rng(0)
+        audio, np.random.default_rng(0)
     )
-    assert out is wav
+    assert out is audio

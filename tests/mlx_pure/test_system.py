@@ -116,22 +116,22 @@ def _make_system(seed: int = 0) -> MagentaRT2System:
 def test_generate_shapes_and_tokens():
     sys = _make_system()
     frames = 3
-    wav, state = sys.generate(frames=frames)
+    audio, state = sys.generate(frames=frames)
 
     # Channel-major [N, C, T] audio.
-    assert wav.waveform.shape[0] == 1
-    assert wav.waveform.ndim == 3
+    assert audio.waveform.shape[0] == 1
+    assert audio.waveform.ndim == 3
     # The decoder lookahead may drop leading output, so the chunk length is
     # not necessarily frames-divisible — just require non-empty audio.
-    assert wav.waveform.shape[-1] > 0
-    assert wav.waveform.dtype == np.float32
-    assert np.all(np.isfinite(wav.waveform))
-    assert np.abs(wav.waveform).max() <= 1.0
+    assert audio.waveform.shape[-1] > 0
+    assert audio.waveform.dtype == np.float32
+    assert np.all(np.isfinite(audio.waveform))
+    assert np.abs(audio.waveform).max() <= 1.0
 
     # Codes are the per-codebook RVQ indices that produced the audio.
-    assert wav.codes.shape == (1, frames, 3)
-    assert wav.codes.min() >= 0
-    assert wav.codes.max() < 8  # tiny codebook_size
+    assert audio.codes.shape == (1, frames, 3)
+    assert audio.codes.min() >= 0
+    assert audio.codes.max() < 8  # tiny codebook_size
 
     assert state is not None  # SamplerState for continuation
 

@@ -68,13 +68,13 @@ class EncodeWithCodec(grain.transforms.Map):
   codec: object
   waveform_fn: object = None
 
-  def map(self, audio_tree: AudioTree) -> AudioTree:
-    if audio_tree.codes is not None:
-      return audio_tree
+  def map(self, audio: AudioTree) -> AudioTree:
+    if audio.codes is not None:
+      return audio
     waveform = (
-        audio_tree.waveform if self.waveform_fn is None else self.waveform_fn(audio_tree.waveform)
+        audio.waveform if self.waveform_fn is None else self.waveform_fn(audio.waveform)
     )
-    return audio_tree.replace(codes=self.codec.waveform_to_codes(waveform))
+    return audio.replace(codes=self.codec.waveform_to_codes(waveform))
 
 
 @dataclasses.dataclass
@@ -90,14 +90,14 @@ class PrepareTarget(grain.transforms.Map):
   target_config: object
   key: str = "target"
 
-  def map(self, audio_tree: AudioTree) -> AudioTree:
-    if audio_tree.codes is None:
+  def map(self, audio: AudioTree) -> AudioTree:
+    if audio.codes is None:
       raise ValueError(
           "PrepareTarget requires codes; run EncodeWithCodec first (or supply "
           "pre-tokenized data)."
       )
-    target = prepare_target_tokens(audio_tree.codes, self.target_config)
-    return audio_tree.replace_extras(**{self.key: target})
+    target = prepare_target_tokens(audio.codes, self.target_config)
+    return audio.replace_extras(**{self.key: target})
 
 
 @dataclasses.dataclass
@@ -114,9 +114,9 @@ class PrepareSource(grain.transforms.RandomMap):
   input_configs: tuple
   key: str = "source"
 
-  def random_map(self, audio_tree: AudioTree, rng) -> AudioTree:
-    source = prepare_source_tokens(audio_tree.extras, self.input_configs, rng)
-    return audio_tree.replace_extras(**{self.key: source})
+  def random_map(self, audio: AudioTree, rng) -> AudioTree:
+    source = prepare_source_tokens(audio.extras, self.input_configs, rng)
+    return audio.replace_extras(**{self.key: source})
 
 
 @dataclasses.dataclass
@@ -137,12 +137,12 @@ class AddFixedStyle(grain.transforms.Map):
   tokens: np.ndarray  # [rvq] int token row
   musiccoca_key: str = _MUSICCOCA.key
 
-  def map(self, audio_tree: AudioTree) -> AudioTree:
-    n_frames = _frame_length(audio_tree)
+  def map(self, audio: AudioTree) -> AudioTree:
+    n_frames = _frame_length(audio)
     row = np.asarray(self.tokens, dtype=np.int32).reshape(-1)  # [rvq]
-    B = _batch_size(audio_tree)
+    B = _batch_size(audio)
     mulan = np.broadcast_to(row, (B, n_frames, row.shape[0])).copy()  # [B,T,rvq]
-    return audio_tree.replace_extras(**{self.musiccoca_key: mulan})
+    return audio.replace_extras(**{self.musiccoca_key: mulan})
 
 
 # ---------------------------------------------------------------------------
@@ -172,26 +172,26 @@ def _is_frame_aligned(arr) -> bool:
   return arr.ndim >= 3
 
 
-def _batch_size(audio_tree: AudioTree) -> int:
+def _batch_size(audio: AudioTree) -> int:
   """Get the batch size (leading axis length) of the AudioTree.
 
-  Tries ``audio_tree.batch_size`` property first; if that raises ValueError
+  Tries ``audio.batch_size`` property first; if that raises ValueError
   (waveform/codes/latents all None), infers from the first metadata array.
   """
   try:
-    return audio_tree.batch_size
+    return audio.batch_size
   except ValueError:
-    for value in audio_tree.extras.values():
+    for value in audio.extras.values():
       if hasattr(value, "shape") and value.ndim >= 1:
         return value.shape[0]
     return 1
 
 
-def _frame_length(audio_tree: AudioTree) -> int:
+def _frame_length(audio: AudioTree) -> int:
   """Number of token frames (axis-1 length) for an AudioTree."""
-  if audio_tree.codes is not None:
-    return audio_tree.codes.shape[1]
-  for value in audio_tree.extras.values():
+  if audio.codes is not None:
+    return audio.codes.shape[1]
+  for value in audio.extras.values():
     if _is_frame_aligned(value):
       return value.shape[1]
   raise ValueError(
@@ -232,10 +232,10 @@ class AudioTreeRandomCrop(grain.transforms.RandomMap):
 
   crop_frames: int
 
-  def random_map(self, audio_tree: AudioTree, rng) -> AudioTree:
-    n_frames = _frame_length(audio_tree)
+  def random_map(self, audio: AudioTree, rng) -> AudioTree:
+    n_frames = _frame_length(audio)
     cf = self.crop_frames
-    spf = audio_tree.waveform.shape[-1] // n_frames if audio_tree.waveform is not None else 0
+    spf = audio.waveform.shape[-1] // n_frames if audio.waveform is not None else 0
     start = 0 if n_frames <= cf else int(rng.integers(0, n_frames - cf + 1))
     pad = n_frames <= cf
 
@@ -247,12 +247,12 @@ class AudioTreeRandomCrop(grain.transforms.RandomMap):
       seg = a[..., start * spf:(start + cf) * spf]
       return _pad_last(seg, cf * spf) if pad else seg
 
-    return audio_tree.replace(
-        waveform=None if audio_tree.waveform is None else crop_samp(audio_tree.waveform),
-        codes=None if audio_tree.codes is None else crop_frame(audio_tree.codes),
+    return audio.replace(
+        waveform=None if audio.waveform is None else crop_samp(audio.waveform),
+        codes=None if audio.codes is None else crop_frame(audio.codes),
         extras={
             k: crop_frame(v) if _is_frame_aligned(v) else v
-            for k, v in audio_tree.extras.items()
+            for k, v in audio.extras.items()
         },
     )
 
@@ -298,15 +298,15 @@ class PrepareCFG(grain.transforms.RandomMap):
   cfg_configs: tuple = (CFG_CONDITIONING_MUSICCOCA_NOTES, CFG_CONDITIONING_DRUMS)
   fixed_scales: object = None  # Optional[Mapping[str, float | Sequence[float]]]
 
-  def random_map(self, audio_tree: AudioTree, rng) -> AudioTree:
+  def random_map(self, audio: AudioTree, rng) -> AudioTree:
     updates = {}
     num_frames = None
-    B = _batch_size(audio_tree)
+    B = _batch_size(audio)
     for cfg in self.cfg_configs:
-      if cfg.key in audio_tree.extras:
+      if cfg.key in audio.extras:
         continue
       if num_frames is None:
-        num_frames = _frame_length(audio_tree)
+        num_frames = _frame_length(audio)
       width = cfg.rvq_truncation_level
       if self.fixed_scales and cfg.key in self.fixed_scales:
         scales = self.fixed_scales[cfg.key]
@@ -327,8 +327,8 @@ class PrepareCFG(grain.transforms.RandomMap):
         row = rng.integers(0, cfg.codebook_size, size=(B, width), dtype=np.int32)
         updates[cfg.key] = np.tile(row[:, None, :], (1, num_frames, 1))  # [B, T, width]
     if not updates:
-      return audio_tree
-    return audio_tree.replace_extras(**updates)
+      return audio
+    return audio.replace_extras(**updates)
 
 
 @dataclasses.dataclass
@@ -343,16 +343,16 @@ class AudioTreeMusicCoCaSticky(grain.transforms.RandomMap):
   sticky_prob: float
   musiccoca_key: str = _MUSICCOCA.key
 
-  def random_map(self, audio_tree: AudioTree, rng) -> AudioTree:
-    if self.musiccoca_key not in audio_tree.extras:
-      return audio_tree
-    arr = audio_tree.extras[self.musiccoca_key]  # [B, T, ch]
-    B = _batch_size(audio_tree)
+  def random_map(self, audio: AudioTree, rng) -> AudioTree:
+    if self.musiccoca_key not in audio.extras:
+      return audio
+    arr = audio.extras[self.musiccoca_key]  # [B, T, ch]
+    B = _batch_size(audio)
     sticky = np.stack([
         apply_musiccoca_sticky(arr[b], self.sticky_prob, rng)
         for b in range(B)
     ], axis=0)
-    return audio_tree.replace_extras(**{self.musiccoca_key: sticky})
+    return audio.replace_extras(**{self.musiccoca_key: sticky})
 
 
 def rvq_tokenize(embedding: np.ndarray, codebooks: np.ndarray) -> np.ndarray:
@@ -450,12 +450,12 @@ class StyleEmbeddingJitter(grain.transforms.RandomMap):
     )
     return load_file(str(path))["quantizer.codebooks"]
 
-  def random_map(self, audio_tree: AudioTree, rng) -> AudioTree:
-    if self.noise_std <= 0 or self.embedding_key not in audio_tree.extras:
-      return audio_tree
+  def random_map(self, audio: AudioTree, rng) -> AudioTree:
+    if self.noise_std <= 0 or self.embedding_key not in audio.extras:
+      return audio
     if rng.random() >= self.prob:
-      return audio_tree
-    embedding = np.asarray(audio_tree.extras[self.embedding_key], np.float32)  # [B, dim]
+      return audio
+    embedding = np.asarray(audio.extras[self.embedding_key], np.float32)  # [B, dim]
     B = embedding.shape[0]
     rms = np.sqrt(np.mean(np.square(embedding), axis=-1, keepdims=True))  # [B, 1]
     jittered = embedding + rng.normal(
@@ -465,8 +465,8 @@ class StyleEmbeddingJitter(grain.transforms.RandomMap):
         rvq_tokenize(jittered[b], self._codebooks)
         for b in range(B)
     ], axis=0)  # [B, depth]
-    num_frames = _frame_length(audio_tree)
-    return audio_tree.replace_extras(**{
+    num_frames = _frame_length(audio)
+    return audio.replace_extras(**{
         self.embedding_key: jittered,
         self.tokens_key: np.tile(tokens[:, None, :], (1, num_frames, 1)),
     })
@@ -521,15 +521,15 @@ class ExactLength(grain.transforms.Map):
 
   window_samples: int
 
-  def map(self, audio_tree: AudioTree) -> AudioTree:
+  def map(self, audio: AudioTree) -> AudioTree:
     # Decoders may come back a few samples long or short of
     # duration * sample_rate; enforce the exact window so every record
     # shares the TreeWriter leaf shape.
-    waveform = audio_tree.waveform
+    waveform = audio.waveform
     if waveform.shape[-1] > self.window_samples:
-      return audio_tree.replace(waveform=waveform[..., :self.window_samples])
+      return audio.replace(waveform=waveform[..., :self.window_samples])
     if waveform.shape[-1] < self.window_samples:
       pad = [(0, 0)] * (waveform.ndim - 1)
       pad.append((0, self.window_samples - waveform.shape[-1]))
-      return audio_tree.replace(waveform=np.pad(waveform, pad))
-    return audio_tree
+      return audio.replace(waveform=np.pad(waveform, pad))
+    return audio

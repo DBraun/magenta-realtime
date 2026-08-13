@@ -141,7 +141,7 @@ def main(
 
     # --- Benchmark ---
     start_time = time.time()
-    audio_tree, state = mrt.generate(style=embedding, frames=frames, scan=scan)
+    audio, state = mrt.generate(style=embedding, frames=frames, scan=scan)
     elapsed = time.time() - start_time
     ms_per_step = (elapsed / frames) * 1000
     print(f"Generated {frames} frames in {elapsed:.1f}s "
@@ -150,7 +150,7 @@ def main(
 
     # --- Save output ---
     out_path = paths.outputs_dir() / f"output_audio_nnx_{model_name}.wav"
-    audio_tree.write(str(out_path))
+    audio.write(str(out_path))
     print(f"Saved to {out_path} ({duration}s of audio)")
 
 
