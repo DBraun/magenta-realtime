@@ -135,3 +135,23 @@ def test_transcribe_produces_notes(pretrained_model):
         assert any(abs(t - expected_onset) < 0.1 for t in note_onsets), (
             f"no note onset near {expected_onset}s in {note_onsets}"
         )
+
+
+def test_abstract_load_leaves_nothing_unmaterialized(pretrained_model):
+    """``load_model`` builds MT3 with ``nnx.eval_shape``, so every leaf starts as
+    a placeholder: parameters come from the checkpoint, RNG state is
+    materialized, and computed constants (the sinusoidal position tables) are
+    recomputed. Any leaf still abstract here would survive into inference and
+    fail deep inside a ``jit`` as "not a valid JAX type" — which is what adding
+    a new derived constant to the model, with no matching restore, would do.
+    """
+    import jax
+    from flax import nnx
+
+    state = nnx.state(pretrained_model)
+    abstract = [
+        jax.tree_util.keystr(path)
+        for path, leaf in jax.tree_util.tree_flatten_with_path(state)[0]
+        if isinstance(leaf, jax.ShapeDtypeStruct)
+    ]
+    assert not abstract, f"unmaterialized after load: {abstract}"

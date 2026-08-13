@@ -22,6 +22,7 @@ from flax import nnx
 from magenta_rt.mt3.config import MT3Config
 from magenta_rt.mt3.download import download_model
 
+from ..checkpoint_utils import load_into_abstract
 from .model import MT3
 
 
@@ -118,8 +119,13 @@ def load_model(
     if load_path is None:
         load_path = download_model(model_type)
 
-    model = MT3(config, rngs=nnx.Rngs(0))
-    load_weights(model, load_file(load_path))
+    # Build abstractly so the constructor never allocates the random-init
+    # weights the checkpoint immediately overwrites.
+    params = load_file(load_path)
+    model = load_into_abstract(
+        lambda: MT3(config, rngs=nnx.Rngs(0)),
+        lambda m: load_weights(m, params),
+    )
     model.eval()
     return model
 

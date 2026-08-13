@@ -977,20 +977,28 @@ class AudioSampleWriter:
     def _ensure_sampler(self):
         if self._sample_mrt is not None:
             return self._sample_mrt
+        from magenta_rt.nnx.checkpoint_utils import load_into_abstract
         from magenta_rt.nnx.model import MagentaRT2Sampler
 
         print("[sft] building audio sampler (depthformer + codec)…")
         # Match the run's storage dtype. For mrt2_base a fp32 sampler (9.6 GB)
         # cannot co-reside with the bf16 training model on a 16 GB GPU, so build
-        # the sampler in bf16 too when the run is bf16.
-        mrt = MagentaRT2Sampler.from_preset(
-            self._model_name, int16_outputs=False,
-            param_dtype=jnp.bfloat16 if self._config.bf16 else None,
-            rngs=nnx.Rngs(0),
-        )
+        # the sampler in bf16 too when the run is bf16. Building abstractly keeps
+        # the discarded random init off the GPU entirely, which is the same
+        # pressure this dtype match exists to relieve.
+        #
         # host=True for bf16 runs: avoids an on-device fp32 checkpoint load that
         # would OOM beside the resident (bf16 mrt2_base) training model.
-        mrt.load_checkpoint(self._checkpoint_path, host=self._config.bf16)
+        mrt = load_into_abstract(
+            lambda: MagentaRT2Sampler.from_preset(
+                self._model_name, int16_outputs=False,
+                param_dtype=jnp.bfloat16 if self._config.bf16 else None,
+                rngs=nnx.Rngs(0),
+            ),
+            lambda m: m.load_checkpoint(
+                self._checkpoint_path, host=self._config.bf16
+            ),
+        )
         if self._diff_filter is MRTLoRAParam:
             # Mirror the run's adapter structure so trainable-state paths
             # match for the per-sample sync below.

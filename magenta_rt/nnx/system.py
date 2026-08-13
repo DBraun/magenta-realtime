@@ -48,6 +48,7 @@ import numpy as np
 from einops import rearrange
 from flax import nnx
 
+from .checkpoint_utils import load_into_abstract
 from .model import MagentaRT2Sampler, get_model_class
 from audiotree import AudioTree
 
@@ -147,12 +148,12 @@ class MagentaRT2System:
         """
         self._spec = get_model_class(size)()
         self._size = size
-        if model is None:
-            model = MagentaRT2Sampler.from_preset(
+        def build() -> MagentaRT2Sampler:
+            return MagentaRT2Sampler.from_preset(
                 size, int16_outputs=False, rngs=nnx.Rngs(seed),
             )
-        self._model = model
 
+        checkpoint_path = None
         if restore:
             if checkpoint is None:
                 if size not in _CHECKPOINT_REGISTRY:
@@ -166,7 +167,21 @@ class MagentaRT2System:
             if not checkpoint_path.is_absolute():
                 checkpoint_path = paths.checkpoints_dir() / checkpoint_path
             logger.info('Loading checkpoint: %s', checkpoint_path)
-            self._model.load_checkpoint(checkpoint_path)
+
+        if model is None and checkpoint_path is not None:
+            # The checkpoint is about to overwrite every weight, so the random
+            # init is pure waste — for mrt2_small alone it costs 27s and 2.3 GB.
+            self._model = load_into_abstract(
+                build,
+                lambda m: m.load_checkpoint(checkpoint_path),
+                seed=seed,
+            )
+        else:
+            # Without a checkpoint the random init *is* the model, so it has to
+            # be built for real; a caller-supplied model is used as given.
+            self._model = build() if model is None else model
+            if checkpoint_path is not None:
+                self._model.load_checkpoint(checkpoint_path)
 
         # --- Sampling defaults ---
         self.temperature = temperature

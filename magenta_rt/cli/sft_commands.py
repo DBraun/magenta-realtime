@@ -104,10 +104,14 @@ def _build_codec_and_style(backend: str, checkpoint: str | None):
         from magenta_rt.nnx.model import MagentaRT2Sampler
         from magenta_rt.nnx.musiccoca import MusicCoCa
 
-        sampler = MagentaRT2Sampler.from_preset(
-            model_name, int16_outputs=False, rngs=flax_nnx.Rngs(0)
+        from magenta_rt.nnx.checkpoint_utils import load_into_abstract
+
+        sampler = load_into_abstract(
+            lambda: MagentaRT2Sampler.from_preset(
+                model_name, int16_outputs=False, rngs=flax_nnx.Rngs(0)
+            ),
+            lambda m: m.load_checkpoint(ckpt),
         )
-        sampler.load_checkpoint(ckpt)
         spectrostream = sampler.spectrostream
 
         class Codec:
