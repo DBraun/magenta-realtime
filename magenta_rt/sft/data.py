@@ -49,6 +49,8 @@ from typing import Iterable, Optional, Sequence
 import grain
 import numpy as np
 
+from ._grain_flags import ensure_absl_flags_parsed
+
 from audiotree import AudioTree
 from audiotree.sources import TreeDataSource
 
@@ -216,8 +218,8 @@ def create_audiotree_dataset(
 
     Flows an AudioTree (waveform / codes / metadata) rather than a
     ``{source, target}`` dict: the grain stages crop, sticky-augment, and fill
-    ``metadata['source']`` while carrying ``codes`` (or raw ``waveform``). The
-    *trainer* then calls ``sft.augment_batch`` to build ``metadata['target']`` —
+    ``extras['source']`` while carrying ``codes`` (or raw ``waveform``). The
+    *trainer* then calls ``sft.augment_batch`` to build ``extras['target']`` —
     and, when ``codes`` are absent, encode ``waveform`` to codes on device.
     ``target_config`` is accepted for signature parity (the target is built at
     the trainer boundary).
@@ -236,7 +238,7 @@ def create_audiotree_dataset(
     (:class:`magenta_rt.sft.transforms.StyleEmbeddingJitter`): the stored
     MusicCoCa embedding is perturbed and re-quantized per example, replacing
     the style tokens. Requires exports that carry
-    ``metadata['musiccoca_embedding']`` and the converted MusicCoCa
+    ``extras['musiccoca_embedding']`` and the converted MusicCoCa
     safetensors on disk; a no-op for data without embeddings.
 
     ``crop_length_seconds=None`` (the default) trains on each record at its
@@ -278,6 +280,7 @@ def create_audiotree_dataset(
     )
 
     if num_workers > 0:
+        ensure_absl_flags_parsed()
         ds = ds.mp_prefetch(
             grain.MultiprocessingOptions(
                 num_workers=num_workers,

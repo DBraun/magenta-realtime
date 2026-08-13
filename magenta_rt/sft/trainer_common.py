@@ -278,10 +278,10 @@ def lr_at_step(step, config: SFTConfig):
 # unconditional (-1 → dropout) token. The CFG-strength channels are NOT here:
 # they are synthesized per example by ``PrepareCFG`` and stay part of the recipe.
 _MASKED_CONDITIONING_PREFIXES = (
-    "metadata.mulan_tokens_25hz",          # MusicCoCa style
-    "metadata.pianoroll_with_onsets_tokens",  # note pianoroll
-    "metadata.drum_pianoroll_tokens",      # drum pianoroll (usually already absent)
-    "metadata.musiccoca_embedding",        # static embedding (only used by jitter)
+    "extras.mulan_tokens_25hz",          # MusicCoCa style
+    "extras.pianoroll_with_onsets_tokens",  # note pianoroll
+    "extras.drum_pianoroll_tokens",      # drum pianoroll (usually already absent)
+    "extras.musiccoca_embedding",        # static embedding (only used by jitter)
 )
 
 

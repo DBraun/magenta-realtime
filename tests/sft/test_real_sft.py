@@ -137,7 +137,7 @@ def test_real_lora_sft_loss_decreases(tmp_path):
         input_configs=spec.input_configs,
         target_config=spec.target_tokens_config,
         seed=0,
-        tree_exclude_prefixes=["metadata.musiccoca_embedding"],
+        tree_exclude_prefixes=["extras.musiccoca_embedding"],
     )
     it = iter(ds)
 

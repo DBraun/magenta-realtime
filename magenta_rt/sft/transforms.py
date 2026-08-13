@@ -97,7 +97,7 @@ class PrepareTarget(grain.transforms.Map):
           "pre-tokenized data)."
       )
     target = prepare_target_tokens(audio_tree.codes, self.target_config)
-    return audio_tree.replace(metadata={**audio_tree.metadata, self.key: target})
+    return audio_tree.replace_extras(**{self.key: target})
 
 
 @dataclasses.dataclass
@@ -115,8 +115,8 @@ class PrepareSource(grain.transforms.RandomMap):
   key: str = "source"
 
   def random_map(self, audio_tree: AudioTree, rng) -> AudioTree:
-    source = prepare_source_tokens(audio_tree.metadata, self.input_configs, rng)
-    return audio_tree.replace(metadata={**audio_tree.metadata, self.key: source})
+    source = prepare_source_tokens(audio_tree.extras, self.input_configs, rng)
+    return audio_tree.replace_extras(**{self.key: source})
 
 
 @dataclasses.dataclass
@@ -124,7 +124,7 @@ class AddFixedStyle(grain.transforms.Map):
   """Overlay one fixed MusicCoCa style-token row onto every example.
 
   The single-style-prompt recipe applied at *training* time: set
-  ``metadata['mulan_tokens_25hz']`` to ``tokens`` (one RVQ row, e.g. from a text
+  ``extras['mulan_tokens_25hz']`` to ``tokens`` (one RVQ row, e.g. from a text
   prompt) broadcast across all frames, so every example conditions on one
   constant style. This lets a **codec-only** export (no per-clip style; the
   channel would otherwise fall back to the learned dropout token) be fine-tuned
@@ -142,9 +142,7 @@ class AddFixedStyle(grain.transforms.Map):
     row = np.asarray(self.tokens, dtype=np.int32).reshape(-1)  # [rvq]
     B = _batch_size(audio_tree)
     mulan = np.broadcast_to(row, (B, n_frames, row.shape[0])).copy()  # [B,T,rvq]
-    return audio_tree.replace(
-        metadata={**audio_tree.metadata, self.musiccoca_key: mulan}
-    )
+    return audio_tree.replace_extras(**{self.musiccoca_key: mulan})
 
 
 # ---------------------------------------------------------------------------
@@ -161,7 +159,16 @@ class AddFixedStyle(grain.transforms.Map):
 
 
 def _is_frame_aligned(arr) -> bool:
-  """True for ``[B, T, ch]``-style metadata that shares the frame axis."""
+  """True for ``[B, T, ch]``-style extras that share the frame axis.
+
+  ``extras`` is a free-form payload dict and audiotree supports non-array leaves
+  in it (strings, for instance), so this has to answer False for anything
+  without a shape rather than raise. The export's own provenance no longer
+  lives here — ``filepath`` / ``offset`` are AudioTree-managed — but a caller's
+  ``extras`` may still carry one.
+  """
+  if not hasattr(arr, "ndim"):
+    return False
   return arr.ndim >= 3
 
 
@@ -174,7 +181,7 @@ def _batch_size(audio_tree: AudioTree) -> int:
   try:
     return audio_tree.batch_size
   except ValueError:
-    for value in audio_tree.metadata.values():
+    for value in audio_tree.extras.values():
       if hasattr(value, "shape") and value.ndim >= 1:
         return value.shape[0]
     return 1
@@ -184,7 +191,7 @@ def _frame_length(audio_tree: AudioTree) -> int:
   """Number of token frames (axis-1 length) for an AudioTree."""
   if audio_tree.codes is not None:
     return audio_tree.codes.shape[1]
-  for value in audio_tree.metadata.values():
+  for value in audio_tree.extras.values():
     if _is_frame_aligned(value):
       return value.shape[1]
   raise ValueError(
@@ -243,9 +250,9 @@ class AudioTreeRandomCrop(grain.transforms.RandomMap):
     return audio_tree.replace(
         waveform=None if audio_tree.waveform is None else crop_samp(audio_tree.waveform),
         codes=None if audio_tree.codes is None else crop_frame(audio_tree.codes),
-        metadata={
+        extras={
             k: crop_frame(v) if _is_frame_aligned(v) else v
-            for k, v in audio_tree.metadata.items()
+            for k, v in audio_tree.extras.items()
         },
     )
 
@@ -296,7 +303,7 @@ class PrepareCFG(grain.transforms.RandomMap):
     num_frames = None
     B = _batch_size(audio_tree)
     for cfg in self.cfg_configs:
-      if cfg.key in audio_tree.metadata:
+      if cfg.key in audio_tree.extras:
         continue
       if num_frames is None:
         num_frames = _frame_length(audio_tree)
@@ -321,7 +328,7 @@ class PrepareCFG(grain.transforms.RandomMap):
         updates[cfg.key] = np.tile(row[:, None, :], (1, num_frames, 1))  # [B, T, width]
     if not updates:
       return audio_tree
-    return audio_tree.replace(metadata={**audio_tree.metadata, **updates})
+    return audio_tree.replace_extras(**updates)
 
 
 @dataclasses.dataclass
@@ -337,15 +344,15 @@ class AudioTreeMusicCoCaSticky(grain.transforms.RandomMap):
   musiccoca_key: str = _MUSICCOCA.key
 
   def random_map(self, audio_tree: AudioTree, rng) -> AudioTree:
-    if self.musiccoca_key not in audio_tree.metadata:
+    if self.musiccoca_key not in audio_tree.extras:
       return audio_tree
-    arr = audio_tree.metadata[self.musiccoca_key]  # [B, T, ch]
+    arr = audio_tree.extras[self.musiccoca_key]  # [B, T, ch]
     B = _batch_size(audio_tree)
     sticky = np.stack([
         apply_musiccoca_sticky(arr[b], self.sticky_prob, rng)
         for b in range(B)
     ], axis=0)
-    return audio_tree.replace(metadata={**audio_tree.metadata, self.musiccoca_key: sticky})
+    return audio_tree.replace_extras(**{self.musiccoca_key: sticky})
 
 
 def rvq_tokenize(embedding: np.ndarray, codebooks: np.ndarray) -> np.ndarray:
@@ -383,7 +390,7 @@ class StyleEmbeddingJitter(grain.transforms.RandomMap):
   """Style augmentation in MusicCoCa *embedding space*.
 
   The offline export stores the raw 768-dim MusicCoCa embedding per
-  window (``metadata['musiccoca_embedding']``) alongside its quantized
+  window (``extras['musiccoca_embedding']``) alongside its quantized
   tokens. That makes a much richer augmentation possible than the
   token-level sticky repeat: perturb the *embedding* with Gaussian noise
   and re-quantize, yielding style tokens from the neighborhood of the
@@ -394,11 +401,11 @@ class StyleEmbeddingJitter(grain.transforms.RandomMap):
   Per example, with probability ``prob``: ``emb' = emb + N(0, (noise_std
   · rms(emb))²)`` (noise scaled to the embedding's per-dim RMS, so one
   ``noise_std`` works across un-normalized MusicCoCa embeddings), then
-  ``metadata['mulan_tokens_25hz']`` is rewritten with the re-quantized
+  ``extras['mulan_tokens_25hz']`` is rewritten with the re-quantized
   tokens (constant across the window's frames, like the export) and the
   stored embedding is updated to match. A no-op when the example carries
   no embedding (an export with ``save_embedding=False`` or
-  ``tree_exclude_prefixes=["metadata.musiccoca_embedding"]``).
+  ``tree_exclude_prefixes=["extras.musiccoca_embedding"]``).
 
   Requires the converted MusicCoCa codebooks: pass ``codebooks``
   directly (tests) or leave None to load ``quantizer.codebooks`` from
@@ -444,11 +451,11 @@ class StyleEmbeddingJitter(grain.transforms.RandomMap):
     return load_file(str(path))["quantizer.codebooks"]
 
   def random_map(self, audio_tree: AudioTree, rng) -> AudioTree:
-    if self.noise_std <= 0 or self.embedding_key not in audio_tree.metadata:
+    if self.noise_std <= 0 or self.embedding_key not in audio_tree.extras:
       return audio_tree
     if rng.random() >= self.prob:
       return audio_tree
-    embedding = np.asarray(audio_tree.metadata[self.embedding_key], np.float32)  # [B, dim]
+    embedding = np.asarray(audio_tree.extras[self.embedding_key], np.float32)  # [B, dim]
     B = embedding.shape[0]
     rms = np.sqrt(np.mean(np.square(embedding), axis=-1, keepdims=True))  # [B, 1]
     jittered = embedding + rng.normal(
@@ -459,8 +466,7 @@ class StyleEmbeddingJitter(grain.transforms.RandomMap):
         for b in range(B)
     ], axis=0)  # [B, depth]
     num_frames = _frame_length(audio_tree)
-    return audio_tree.replace(metadata={
-        **audio_tree.metadata,
+    return audio_tree.replace_extras(**{
         self.embedding_key: jittered,
         self.tokens_key: np.tile(tokens[:, None, :], (1, num_frames, 1)),
     })
@@ -494,7 +500,7 @@ def to_source_target(batch, target_config, *, codec=None, asarray=None):
   unified :func:`augment_batch` boundary — encode ``waveform`` -> ``codes`` when
   a ``codec`` is given and ``codes`` are absent (the on-the-fly GPU path),
   otherwise use the pre-tokenized ``codes`` — then builds the depthformer target
-  and returns ``metadata['source']`` / ``metadata['target']`` cast via
+  and returns ``extras['source']`` / ``extras['target']`` cast via
   ``asarray`` (``jnp.asarray`` / ``mx.array``; default identity).
   """
   cast = asarray or (lambda x: x)
@@ -506,7 +512,7 @@ def to_source_target(batch, target_config, *, codec=None, asarray=None):
     transforms.append(EncodeWithCodec(codec))
   transforms.append(PrepareTarget(target_config))
   batch = augment_batch(None, batch, transforms)
-  return cast(batch.metadata["source"]), cast(batch.metadata["target"])
+  return cast(batch.extras["source"]), cast(batch.extras["target"])
 
 
 @dataclasses.dataclass

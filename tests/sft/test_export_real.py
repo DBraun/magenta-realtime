@@ -89,7 +89,7 @@ def test_real_export_round_trip(tmp_path):
     batch = next(iter(ds))
     assert batch.codes.shape[0] == 2
     assert batch.codes.shape[2] == target_config.rvq_levels
-    assert batch.metadata[EMBEDDING_KEY].shape == (2, 768)
+    assert batch.extras[EMBEDDING_KEY].shape == (2, 768)
 
     source, target = to_source_target(batch, target_config)
     assert source.shape == (2, 50, _cfg.MUSICCOCA.rvq_truncation_level)
@@ -159,7 +159,7 @@ def test_real_export_with_mt3_transcription(tmp_path):
     )
 
     record = TreeDataSource(out)[0]
-    roll = record.metadata[_cfg.PIANOROLL_WITH_ONSETS.key][0]  # [250, 128]
+    roll = record.extras[_cfg.PIANOROLL_WITH_ONSETS.key][0]  # [250, 128]
     assert roll.shape == (250, 128)
     assert roll.max() <= 2 and roll.min() >= 0
     # MT3 should place an onset within ±3 frames (120 ms) of each note.
@@ -174,4 +174,4 @@ def test_real_export_with_mt3_transcription(tmp_path):
     # The drum channel is intentionally not synthesized (it's an intent
     # directive, not an onset raster); training conditions it on the dropout
     # token, so the export carries no drum leaf.
-    assert _cfg.DRUM_PIANOROLL.key not in record.metadata
+    assert _cfg.DRUM_PIANOROLL.key not in record.extras

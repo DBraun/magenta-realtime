@@ -36,7 +36,6 @@ then **[Watch your run](#watch-your-run-tensorboard--wavs)**.
 | `wandb_writer.py`| Optional Weights & Biases `MetricWriter` for the `MultiWriter` stack. |
 | `tb_writer.py`   | TF-free TensorBoard writer (`tensorboardX`) for the MLX trainer (`clu`/TensorFlow aborts co-resident with Metal). |
 | `trainer_common.py` | Backend-neutral trainer glue: the `tyro` CLI over `SFTConfig` (`TrainCLI`), warmup→rsqrt LR schedule, dataset factories, logging setup. |
-| `fake_data.py`   | Synthetic `TreeWriter` dataset writer matching the SFT example schema (test fixture only). |
 
 ## Quick start
 
@@ -133,7 +132,8 @@ pytest tests/sft -v
 ```
 
 The fast suite is checkpoint-free: it trains `TinyPOCSpec` (a tiny random-weight
-mrt2-shaped model) on a synthetic dataset from `fake_data.write_fake_tree_dataset`,
+mrt2-shaped model) on a synthetic dataset from
+`tests/sft/test_utils.write_fake_tree_dataset`,
 so no downloads or real audio are needed. It covers the data pipeline
 (shape/dtype), freeze retype accounting, LoRA/DoRA zero-init identity + fuse
 round-trip + strength=0 collapse, loss decrease over a short run, and the orbax
@@ -160,7 +160,7 @@ ds = create_audiotree_dataset(        # yields batched audiotree.AudioTree
     seed=0,
     num_workers=8,                   # 0 disables mp_prefetch (single-process)
 )
-for batch in ds:                     # AudioTree: metadata['source'] + codes/waveform
+for batch in ds:                     # AudioTree: extras['source'] + codes/waveform
     # Pre-tokenized data -> no codec. For audio data, pass a SpectroStream via
     # codec= to encode samples->tokens on device (the on-the-fly path).
     source, target = to_source_target(  # np.int32 [B,T,144] / [B,T,Q], cast for you
@@ -232,7 +232,7 @@ long as the training crop** (`crop_length_seconds * 25` frames);
 ### Exporting a dataset (`export.py`)
 
 `export_tree_dataset` is an audiotree prerender pipeline:
-`audiotree.sources.create_audio_dataset` + `SaliencyParams` draw
+`audiotree.sources.create_audio_dataset` + `ExcerptConfig` draw
 `num_samples` salient fixed-`duration` excerpts from directories of audio
 (multi-try loudness search; files shuffle and repeat with fresh excerpt
 positions), grain `mp_prefetch` workers decode in parallel, and the model
@@ -241,9 +241,9 @@ process (the workers data-parallelize the decode while the accelerator
 consumes whole batches). The raw waveform is **not** saved; each record
 carries full-depth `codes` `[1, T, 64]` (the target prep truncates to
 `rvq_truncation_level` at train time), broadcast style tokens
-`metadata['mulan_tokens_25hz']` `[1, T, 12]`, the raw
-`metadata['musiccoca_embedding']` `[1, 768]` (static per-example metadata;
-pass `tree_exclude_prefixes=["metadata.musiccoca_embedding"]` to
+`extras['mulan_tokens_25hz']` `[1, T, 12]`, the raw
+`extras['musiccoca_embedding']` `[1, 768]` (static per-example metadata;
+pass `tree_exclude_prefixes=["extras.musiccoca_embedding"]` to
 `create_audiotree_dataset` to leave it on disk during training), and
 `filepath` / `offset` provenance. `profile=True` prints grain's per-stage
 execution summary at the end (`ExecutionTrackingMode.STAGE_TIMING`).
@@ -484,7 +484,7 @@ is the natural fit there.
 The two trainers are **peers**, not a reference + a smoke driver. The NNX
 trainer runs on JAX (CPU on Mac via `JAX_PLATFORMS=cpu`; GPU/TPU elsewhere);
 the MLX trainer is the path to **Apple Silicon GPU** (Metal) fine-tuning. Both
-share `sft.data`, `sft.fake_data`, `SFTConfig`, and `sft.trainer_common`, and
+share `sft.data`, `SFTConfig`, and `sft.trainer_common`, and
 both support LoRA, **DoRA**, the runtime [strength knob](#dora-and-the-runtime-strength-knob),
 pretrained-checkpoint loading, gradient accumulation, periodic [audio
 sampling](#watch-your-run-tensorboard--wavs), eval + early-stopping, and

@@ -219,7 +219,7 @@ def _build_musiccoca_nnx():
                    "--peak-normalize/--gain.")
 @click.option("--peak-normalize", is_flag=True, default=False,
               help="Peak-normalize each excerpt to 1.0 before encoding "
-                   "(audiotree peak_normalize).")
+                   "(audiotree peak_norm).")
 @click.option("--gain", type=float, default=None,
               help="Apply this fixed linear gain to each excerpt before "
                    "encoding (e.g. 0.7), via audiotree volume_change "
@@ -259,7 +259,7 @@ def main(itunes_xml, filelist, out, num_samples, duration, trim_seconds,
             f.write("\n".join(files) + "\n")
         print(f"[export] wrote resolved file list -> {write_filelist}")
 
-    from audiotree import SaliencyParams
+    from audiotree import ExcerptConfig
     from tqdm import tqdm
 
     from magenta_rt.sft.export import (
@@ -283,8 +283,8 @@ def main(itunes_xml, filelist, out, num_samples, duration, trim_seconds,
           f"{'MusicCoCa' if use_musiccoca else 'no-MusicCoCa'} + "
           f"{'MT3' if use_transcribe else 'no-MT3'} (all fp32)")
 
-    saliency = SaliencyParams(
-        enabled=True, num_tries=saliency_tries, loudness_cutoff=loudness_cutoff)
+    saliency = ExcerptConfig(
+        strategy="loudest", num_tries=saliency_tries, lufs_cutoff=loudness_cutoff)
     trim_frames = round(trim_seconds * FRAME_RATE)
     kept_frames = round(duration * FRAME_RATE) - 2 * trim_frames
 
@@ -296,8 +296,8 @@ def main(itunes_xml, filelist, out, num_samples, duration, trim_seconds,
         normalize = volume_norm(min_db=volume_norm_lufs, max_db=volume_norm_lufs)
         normalize_label = f"volume_norm_lufs={volume_norm_lufs}"
     elif peak_normalize:
-        from audiotree.transforms import peak_normalize as _peak_normalize
-        normalize = _peak_normalize()
+        from audiotree.transforms import peak_norm as _peak_norm
+        normalize = _peak_norm()
         normalize_label = "peak_normalize=1.0"
     elif gain is not None:
         import math
@@ -324,7 +324,7 @@ def main(itunes_xml, filelist, out, num_samples, duration, trim_seconds,
                 codec=codec, style_model=style_model, transcriber=transcriber,
                 files=split_files, num_samples=n_samples, duration=duration,
                 trim_frames=trim_frames,
-                batch_size=batch_size, seed=seed, saliency_params=saliency,
+                batch_size=batch_size, seed=seed, excerpt=saliency,
                 normalize=normalize,
                 worker_count=workers, worker_buffer_size=worker_buffer_size,
                 save_embedding=use_musiccoca,

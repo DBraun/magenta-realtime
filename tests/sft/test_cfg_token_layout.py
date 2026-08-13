@@ -70,6 +70,10 @@ def test_pretrained_embedding_layout_matches_prepare_source_tokens():
     if not CHECKPOINT.exists():
         pytest.skip(f"checkpoint not found at {CHECKPOINT}")
 
+    # ``train_mlx`` imports ``mlx.core`` at module scope, so this test only runs
+    # where MLX is installed (Apple Silicon), not on a Linux/CUDA host.
+    pytest.importorskip("mlx.core")
+
     import train_mlx as sft_mlx  # type: ignore  # noqa: E402
     from magenta_rt.mlx_pure.configs import get_model_class
     from magenta_rt.sft.data import prepare_source_tokens

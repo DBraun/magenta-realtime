@@ -16,27 +16,28 @@
 
 An audiotree prerender pipeline: ``audiotree.sources.create_audio_dataset``
 draws fixed-duration *salient* excerpts (multi-try loudness search via
-``SaliencyParams``) from directories of audio files, grain worker processes
+``ExcerptConfig``) from directories of audio files, grain worker processes
 read + preprocess them in parallel, and the main process encodes each batch with a
 SpectroStream codec and a MusicCoCa style model and writes the results as an
 *AudioTree pytree* via audiotree's ``TreeWriter`` (``manifest.json`` + one
 memmap per leaf). The raw ``waveform`` is **not** saved — each record carries:
 
 * ``codes``                            ``[1, T, D]``  SpectroStream RVQ codes
-* ``metadata['mulan_tokens_25hz']``    ``[1, T, 12]`` quantized style tokens,
+* ``extras['mulan_tokens_25hz']``    ``[1, T, 12]`` quantized style tokens,
   the per-excerpt embedding's RVQ tokens broadcast across the excerpt's frames
-* ``metadata['musiccoca_embedding']``  ``[1, 768]``   raw style embedding
+* ``extras['musiccoca_embedding']``  ``[1, 768]``   raw style embedding
   (static per-example metadata; the training pipeline passes it through —
   exclude it via ``create_audiotree_dataset(tree_exclude_prefixes=
-  ["metadata.musiccoca_embedding"])`` to leave it on disk)
-* ``metadata['filepath']`` / ``metadata['offset']`` — provenance: the source
-  audio file and the excerpt's offset in seconds within it
+  ["extras.musiccoca_embedding"])`` to leave it on disk)
+* ``filepath`` / ``offset`` — provenance in AudioTree's own container (read
+  back via the ``.filepath`` / ``.offset`` properties): the source audio file
+  and the excerpt's offset in seconds within it
 
 With a ``transcriber`` (e.g. :func:`mt3_transcriber`), the note piano-roll
 conditioning channel is added per excerpt (see
 :mod:`magenta_rt.sft.pianoroll`):
 
-* ``metadata['pianoroll_with_onsets_tokens']``  ``[1, T, 128]`` int8 in
+* ``extras['pianoroll_with_onsets_tokens']``  ``[1, T, 128]`` int8 in
   ``[0, 3)`` — off / on / onset per pitch
 
 The drum channel (``drum_pianoroll_tokens``) is intentionally **not** produced:
@@ -91,14 +92,15 @@ from typing import Optional, Sequence
 import numpy as np
 
 from audiotree import AudioTree
-from audiotree import SaliencyParams, TreeWriter
+from audiotree import ExcerptConfig, TreeWriter
 from audiotree.sources import create_audio_dataset
 from audiotree.transforms import stereo
-from audiotree.sources.core import _load_audio_with_saliency
+from audiotree.sources.core import _load_excerpt
 import grain
 
 from magenta_rt.config import MUSICCOCA as _MUSICCOCA
 
+from ._grain_flags import ensure_absl_flags_parsed
 from .pianoroll import transcription_to_channels
 from .transforms import ExactLength
 
@@ -116,7 +118,7 @@ EMBEDDING_KEY = "musiccoca_embedding"
 # ---------------------------------------------------------------------------
 # Per-excerpt level normalization for ``export_tree_dataset(normalize=)`` is
 # supplied entirely by ``audiotree.transforms`` — no local helpers:
-#   * ``peak_normalize()``                       -> peak 1.0
+#   * ``peak_norm()``                            -> peak 1.0
 #   * ``volume_norm(min_db=L, max_db=L)``        -> a fixed LUFS target
 #   * ``volume_change(min_db=D, max_db=D)``      -> a fixed dB gain
 #     (a linear gain g is ``D = 20*log10(g)`` dB)
@@ -166,15 +168,16 @@ def discover_audio_files(
     file pool). Uses audiotree's discovery so the file set matches what
     ``create_audio_dataset`` would have walked.
     """
-    from audiotree.sources.core import (
-        _default_extensions,
-        _find_files_with_extensions,
-    )
+    from audiotree.sources import find_audio_files
 
     if isinstance(sources, (str, pathlib.Path)):
         sources = [sources]
-    exts = list(extensions) if extensions is not None else _default_extensions
-    return sorted(_find_files_with_extensions([str(s) for s in sources], exts))
+    # `find_audio_files` already returns a sorted, de-duplicated list, and
+    # applies audiotree's own default extension set when given None.
+    return find_audio_files(
+        [str(s) for s in sources],
+        list(extensions) if extensions is not None else None,
+    )
 
 
 def split_audio_files(
@@ -315,13 +318,6 @@ def _resolve_fixed_style(*, style_prompt, style_model, style_embedding, style_to
     return fixed_embedding, fixed_tokens
 
 
-def _copy_provenance(batch, metadata) -> None:
-    """Carry the audio loader's provenance (source file + offset) into metadata."""
-    for key in ("filepath", "offset"):
-        if key in batch.metadata:
-            metadata[key] = batch.metadata[key]
-
-
 def _transcribe_channels(transcriber, audio: AudioTree, frames: int) -> dict:
     """Run ``transcriber`` on each clip's 16 kHz mono samples and stack the
     per-frame conditioning channels into ``{channel: [B, frames, ...]}``.
@@ -410,7 +406,7 @@ class _BatchEncoder:
         # uint16 is lossless here and halves the largest stored leaf.
         codes_t = codes[:, tlo:thi, :].astype(np.uint16)
 
-        metadata = {}
+        extras = {}
         # One MusicCoCa embedding per target frame, from a LEADING [t, t+10s]
         # window. The windowing + shared single log-mel live in the style model
         # (the nnx port computes the mel once and windows it; musiccoca_scan
@@ -426,7 +422,7 @@ class _BatchEncoder:
         # mulan is a SOURCE channel that prepare_source_tokens may later mask with
         # a -1 dropout sentinel, so store it SIGNED (int16); an unsigned dtype
         # would wrap that -1 to 65535.
-        metadata[_MUSICCOCA.key] = np.asarray(
+        extras[_MUSICCOCA.key] = np.asarray(
             self._style_model.tokenize(win_emb), dtype=np.int16
         )  # [B, n, 12]
         # No EMBEDDING_KEY: there is no single per-clip embedding in this mode.
@@ -434,27 +430,30 @@ class _BatchEncoder:
         # ``musiccoca_embedding``; with per-frame tokens it would need per-frame
         # embeddings [B, n, 768] on disk. Skipped (jitter defaults off); the
         # trainer consumes the stored per-frame tokens directly.
-        _copy_provenance(batch, metadata)
 
         # Pianoroll over the TARGET sub-window only (its frames must align to the
         # kept codes / style tokens, not the head-trim or look-ahead regions).
         if self._transcriber is not None:
             tl_s, th_s = tlo * SAMPLES_PER_FRAME, thi * SAMPLES_PER_FRAME
             clips = batch.replace(waveform=batch.waveform[:, :, tl_s:th_s])
-            metadata.update(_transcribe_channels(self._transcriber, clips, n))
+            extras.update(_transcribe_channels(self._transcriber, clips, n))
 
-        if "offset" in metadata:
-            metadata["offset"] = np.asarray(metadata["offset"], dtype=np.float32)
-        return AudioTree(
-            waveform=None, sample_rate=batch.sample_rate,
-            codes=codes_t, metadata=metadata,
+        # Derive the record from ``batch`` rather than building a fresh tree:
+        # the loader's provenance (``filepath`` / ``offset``) lives in
+        # AudioTree's own container and rides along untouched, so it needs no
+        # restating here. ``clear_lufs`` because the cached loudness describes
+        # the waveform being dropped, and a stale value is worse than none.
+        return (
+            batch.replace(waveform=None, codes=codes_t)
+            .replace_extras(**extras)
+            .clear_lufs()
         )
 
     def _encode_broadcast(self, batch: AudioTree, codes, frames: int) -> AudioTree:
         """One MusicCoCa embedding per clip, broadcast across the excerpt's
         frames, with an optional symmetric ``trim_frames`` crop."""
         bsz = batch.waveform.shape[0]
-        metadata = {}
+        extras = {}
         if self._compute_musiccoca:
             if self._style_prompt is not None:
                 # Same fixed text embedding/tokens for every record in the batch.
@@ -473,16 +472,15 @@ class _BatchEncoder:
                 style_tokens = np.asarray(
                     self._style_model.tokenize(embeddings), dtype=np.int32
                 )  # [B, 12]
-            metadata[_MUSICCOCA.key] = np.repeat(
+            extras[_MUSICCOCA.key] = np.repeat(
                 style_tokens[:, None, :], frames, axis=1
             )
             if self._save_embedding:
-                metadata[EMBEDDING_KEY] = embeddings
+                extras[EMBEDDING_KEY] = embeddings
 
-        _copy_provenance(batch, metadata)
 
         if self._transcriber is not None:
-            metadata.update(
+            extras.update(
                 _transcribe_channels(self._transcriber, batch, frames)
             )
 
@@ -492,11 +490,11 @@ class _BatchEncoder:
         if self._trim_frames:
             lo, hi = self._trim_frames, frames - self._trim_frames
             codes = codes[:, lo:hi, :]
-            metadata = {
+            extras = {
                 key: (value[:, lo:hi]
                       if getattr(value, "ndim", 0) >= 3
                       and value.shape[1] == frames else value)
-                for key, value in metadata.items()
+                for key, value in extras.items()
             }
 
         # Compact storage dtypes — lossless for these value ranges; the training
@@ -510,15 +508,19 @@ class _BatchEncoder:
         # ``notes_to_pianoroll``. ``musiccoca_embedding`` stays fp32 (precision
         # matters for re-tokenize + StyleEmbeddingJitter).
         codes = codes.astype(np.uint16)
-        if _MUSICCOCA.key in metadata:
-            metadata[_MUSICCOCA.key] = np.asarray(
-                metadata[_MUSICCOCA.key], dtype=np.int16
+        if _MUSICCOCA.key in extras:
+            extras[_MUSICCOCA.key] = np.asarray(
+                extras[_MUSICCOCA.key], dtype=np.int16
             )
-        if "offset" in metadata:
-            metadata["offset"] = np.asarray(metadata["offset"], dtype=np.float32)
-        return AudioTree(
-            waveform=None, sample_rate=batch.sample_rate,
-            codes=codes, metadata=metadata,
+        # Derive the record from ``batch`` rather than building a fresh tree:
+        # the loader's provenance (``filepath`` / ``offset``) lives in
+        # AudioTree's own container and rides along untouched, so it needs no
+        # restating here. ``clear_lufs`` because the cached loudness describes
+        # the waveform being dropped, and a stale value is worse than none.
+        return (
+            batch.replace(waveform=None, codes=codes)
+            .replace_extras(**extras)
+            .clear_lufs()
         )
 
 
@@ -531,7 +533,7 @@ def _build_excerpt_dataset(
     files,
     duration,
     seed,
-    saliency_params,
+    excerpt,
     extensions,
     normalize,
     num_samples,
@@ -554,12 +556,12 @@ def _build_excerpt_dataset(
         # Build the same salient-excerpt pipeline create_audio_dataset builds,
         # but from an explicit file list (the file-level split path).
         load_fn = functools.partial(
-            _load_audio_with_saliency,
+            _load_excerpt,
             sample_rate=SAMPLE_RATE,
             duration=duration,
             mono=False,
             pad_mode="wrap",
-            saliency_params=saliency_params,
+            excerpt=excerpt,
         )
         ds = (
             grain.MapDataset.source(files)
@@ -573,23 +575,23 @@ def _build_excerpt_dataset(
         ds = create_audio_dataset(
             sources=[str(s) for s in sources],
             shuffle=True,
-            repeat=True,
+            num_epochs=None,  # unbounded stream (was `repeat=True` pre-1.0)
             shuffle_seed=seed,
             sample_rate=SAMPLE_RATE,
             mono=False,
             duration=duration,
             pad_mode="wrap",
             extensions=list(extensions) if extensions is not None else None,
-            saliency_params=saliency_params,
+            excerpt=excerpt,
         )
     ds = ds.map(ExactLength(window_samples))
     ds = ds.map(stereo())
-    # ExactLength/stereo rebuild the waveform, dropping the loudness the saliency
+    # ExactLength/stereo rebuild the waveform, dropping the loudness the excerpt
     # search computed (and mono inputs always pass through stereo()), so recompute
     # it on the final waveform before the near-silence filter — otherwise
-    # ``loudness`` is None and the filter raises on ``loudness[0]``.
-    ds = ds.map(AudioTree.replace_loudness)
-    ds = ds.filter(lambda audio_tree: audio_tree.loudness[0] > -60.)
+    # ``lufs`` is None and the filter raises on ``lufs[0]``.
+    ds = ds.map(AudioTree.replace_lufs)
+    ds = ds.filter(lambda audio_tree: audio_tree.lufs[0] > -60.)
     # Optional per-excerpt level normalization, applied AFTER the near-silence
     # filter (so quiet noise isn't boosted to full level) and BEFORE encoding.
     # Accepts a grain ``RandomMap`` (e.g. ``audiotree.transforms.volume_norm``
@@ -603,15 +605,26 @@ def _build_excerpt_dataset(
     ds = ds.to_iter_dataset(
         grain.ReadOptions(num_threads=0, prefetch_buffer_size=0)
     )
-    ds = grain.experimental.LimitIterDataset(ds, num_samples)
     ds = ds.batch(batch_size, drop_remainder=False, batch_fn=AudioTree.batch)
     if worker_count > 0:
+        ensure_absl_flags_parsed()
         ds = ds.mp_prefetch(
             grain.MultiprocessingOptions(
                 num_workers=worker_count,
                 per_worker_buffer_size=worker_buffer_size,
             )
         )
+    # Bound the stream AFTER the workers are joined, not before. `mp_prefetch`
+    # replays the whole upstream pipeline in each worker, so a limit placed
+    # above it is applied once *per worker* and the export writes
+    # ``worker_count * num_samples`` records — silently ignoring --num-samples
+    # (the source is an unbounded ``num_epochs=None`` stream, so nothing else
+    # stops it). Limiting here counts batches off the joined stream, so the
+    # total is ``num_samples`` rounded up to a whole batch regardless of
+    # ``worker_count``.
+    ds = grain.experimental.LimitIterDataset(
+        ds, -(-num_samples // batch_size)  # ceil division: whole batches
+    )
     if profile:
         ds = grain.experimental.WithOptionsIterDataset(
             ds,
@@ -637,7 +650,7 @@ def export_tree_dataset(
     trim_frames: int = 0,
     batch_size: int = 4,
     seed: int = 0,
-    saliency_params: Optional[SaliencyParams] = None,
+    excerpt: Optional[ExcerptConfig] = None,
     normalize=None,
     extensions: Optional[Sequence[str]] = None,
     worker_count: int = 0,
@@ -709,8 +722,8 @@ def export_tree_dataset(
         (e.g. ``audiotree.transforms.volume_norm(min_db=L, max_db=L)`` for a
         fixed ``L`` LUFS target) or a plain ``AudioTree -> AudioTree`` callable
         (e.g. a peak-normalize or fixed-gain map). ``None`` leaves levels as-is.
-      saliency_params: ``audiotree.SaliencyParams`` controlling the
-        loudness-guided excerpt search. Defaults to an enabled 8-try search
+      excerpt: ``audiotree.ExcerptConfig`` controlling the
+        loudness-guided excerpt search. Defaults to a ``"loudest"`` 8-try search
         with a -60 LUFS cutoff — permissive enough to reject only near-silence,
         so excerpts cover the whole track (intros, breakdowns, quiet passages)
         rather than over-weighting the loudest sections (a higher cutoff like
@@ -776,9 +789,9 @@ def export_tree_dataset(
         raise ValueError(f"num_samples must be positive, got {num_samples}.")
     if (sources is None) == (files is None):
         raise ValueError("pass exactly one of `sources` or `files`.")
-    if saliency_params is None:
-        saliency_params = SaliencyParams(
-            enabled=True, num_tries=8, loudness_cutoff=-60.0
+    if excerpt is None:
+        excerpt = ExcerptConfig(
+            strategy="loudest", num_tries=8, lufs_cutoff=-60.0
         )
     if sources is not None and isinstance(sources, (str, pathlib.Path)):
         sources = [sources]
@@ -819,7 +832,7 @@ def export_tree_dataset(
         files=files,
         duration=duration,
         seed=seed,
-        saliency_params=saliency_params,
+        excerpt=excerpt,
         extensions=extensions,
         normalize=normalize,
         num_samples=num_samples,
@@ -836,8 +849,20 @@ def export_tree_dataset(
         metadata=manifest,
         pbar=pbar,
     ) as writer:
+        # The stream is bounded in whole batches (see `_build_excerpt_dataset`),
+        # so the last one can overshoot `num_samples`; trim it here — before the
+        # encode, so no compute is spent on records that are not written — and
+        # the dataset holds exactly `num_samples` records for any `worker_count`
+        # / `batch_size` combination.
+        written = 0
         for batch in iterator:        # batch: pure-numpy AudioTree from grain
+            remaining = num_samples - written
+            if remaining <= 0:
+                break
+            if batch.batch_size > remaining:
+                batch = batch[:remaining]
             writer.write(encode(batch))  # MLX/GPU/TPU encode, main process
+            written += batch.batch_size
     if profile:
         try:  # re-exported from grain.experimental on newer grain
             from grain.experimental import get_execution_summary

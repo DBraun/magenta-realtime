@@ -100,7 +100,7 @@ def write_fake_tree_dataset(
                     waveform=None if audio is None else audio.T[None],
                     sample_rate=48_000,
                     codes=None if codes is None else codes[None],
-                    metadata={k: v[None] for k, v in arrays.items()},
+                    extras={k: v[None] for k, v in arrays.items()},
                 )
             )
     return out_dir

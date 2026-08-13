@@ -86,17 +86,17 @@ def test_export_and_read_back(tmp_path):
         assert record.sample_rate == SAMPLE_RATE
         assert record.codes.shape == (1, frames, _RVQ_DEPTH)
         assert record.codes.dtype == np.uint16
-        style = record.metadata[_MUSICCOCA.key]
+        style = record.extras[_MUSICCOCA.key]
         assert style.shape == (1, frames, 12)
         assert style.dtype == np.int16
         # Style tokens are one embedding broadcast across the excerpt.
         np.testing.assert_array_equal(style[0], np.tile(style[0, 0], (frames, 1)))
-        emb = record.metadata[EMBEDDING_KEY]
+        emb = record.extras[EMBEDDING_KEY]
         assert emb.shape == (1, 768)
         assert emb.dtype == np.float32
         # Provenance: the source file and the excerpt offset round-trip.
         assert "clip_" in record.filepath[0]
-        assert record.metadata["offset"].shape == (1,)
+        assert record.offset.shape == (1,)
 
 
 def test_export_mono_input_recomputes_loudness(tmp_path):
@@ -149,13 +149,13 @@ def test_export_with_style_prompt_is_constant_across_records(tmp_path):
 
     source = TreeDataSource(out)
     assert len(source) == 3
-    ref_style = source[0].metadata[_MUSICCOCA.key]
-    ref_emb = source[0].metadata[EMBEDDING_KEY]
+    ref_style = source[0].extras[_MUSICCOCA.key]
+    ref_emb = source[0].extras[EMBEDDING_KEY]
     for i in range(len(source)):
         record = source[i]
         # Same fixed-prompt tokens/embedding on every record (and every frame).
-        np.testing.assert_array_equal(record.metadata[_MUSICCOCA.key], ref_style)
-        np.testing.assert_array_equal(record.metadata[EMBEDDING_KEY], ref_emb)
+        np.testing.assert_array_equal(record.extras[_MUSICCOCA.key], ref_style)
+        np.testing.assert_array_equal(record.extras[EMBEDDING_KEY], ref_emb)
         # But the audio (codes) still differs per excerpt — only style is fixed.
     assert not np.array_equal(source[0].codes, source[1].codes)
 
@@ -220,7 +220,7 @@ def test_export_more_samples_than_files(tmp_path):
     )
     source = TreeDataSource(out)
     assert len(source) == 5
-    assert EMBEDDING_KEY not in source[0].metadata
+    assert EMBEDDING_KEY not in source[0].extras
     # Excerpts are drawn at random positions, not all identical.
     codes = np.stack([source[i].codes[0] for i in range(5)])
     assert not all(
@@ -274,7 +274,7 @@ def test_export_feeds_training_pipeline(tmp_path):
     )
     batch = next(iter(ds))
     # The static embedding passes through batching untouched.
-    assert batch.metadata[EMBEDDING_KEY].shape == (2, 768)
+    assert batch.extras[EMBEDDING_KEY].shape == (2, 768)
     source, target = to_source_target(batch, target_config)
     assert source.shape == (2, 25, _cfg.MUSICCOCA.rvq_truncation_level)
     assert target.shape == (2, 25, _RVQ_DEPTH)
@@ -355,7 +355,7 @@ def test_fixed_style_tokens_overlay(tmp_path):
 def test_volume_change_fixed_gain():
     """A fixed-dB ``volume_change`` (min_db==max_db) scales by a constant linear
     factor. Level normalization is supplied entirely by audiotree.transforms
-    (``peak_normalize`` / ``volume_norm`` / ``volume_change``); the export module
+    (``peak_norm`` / ``volume_norm`` / ``volume_change``); the export module
     keeps no local helper.
     """
     import numpy as _np
@@ -374,15 +374,15 @@ def test_volume_change_fixed_gain():
 
 
 def test_export_with_normalize_map(tmp_path):
-    """export_tree_dataset accepts a plain ``Map`` normalize (peak_normalize)."""
+    """export_tree_dataset accepts a plain ``Map`` normalize (peak_norm)."""
     from audiotree.sources import TreeDataSource
-    from audiotree.transforms import peak_normalize
+    from audiotree.transforms import peak_norm
 
     audio_dir = _write_wavs(tmp_path, [4.0])
     out = export_tree_dataset(
         audio_dir, tmp_path / "dataset", codec=FakeCodec(),
         style_model=None, num_samples=3, duration=1.0,
-        normalize=peak_normalize(),
+        normalize=peak_norm(),
     )
     assert len(TreeDataSource(out)) == 3
 
@@ -423,10 +423,10 @@ def test_export_excluding_embedding_at_read(tmp_path):
         input_configs=[_cfg.MUSICCOCA],
         target_config=None,
         seed=0,
-        tree_exclude_prefixes=[f"metadata.{EMBEDDING_KEY}"],
+        tree_exclude_prefixes=[f"extras.{EMBEDDING_KEY}"],
     )
     batch = next(iter(ds))
-    assert EMBEDDING_KEY not in batch.metadata
+    assert EMBEDDING_KEY not in batch.extras
 
 
 class FakeTranscriber:
@@ -479,14 +479,14 @@ def test_export_with_transcriber_channels(tmp_path):
     source = TreeDataSource(out)
     for i in range(2):
         record = source[i]
-        roll = record.metadata[_cfg.PIANOROLL_WITH_ONSETS.key]
+        roll = record.extras[_cfg.PIANOROLL_WITH_ONSETS.key]
         assert roll.shape == (1, 25, 128) and roll.dtype == np.int8
         pitch = 60 + (i + 1)
         assert roll[0, 5, pitch] == 2          # onset at 0.2s = frame 5
         assert (roll[0, 6:15, pitch] == 1).all()  # sustain through 0.6s
         # The drum channel is intentionally not synthesized (see pianoroll.py);
         # training conditions it on the unconditional dropout token instead.
-        assert _cfg.DRUM_PIANOROLL.key not in record.metadata
+        assert _cfg.DRUM_PIANOROLL.key not in record.extras
 
 
 def test_export_without_transcriber_uses_dropout_tokens(tmp_path):
@@ -556,8 +556,8 @@ def test_export_codec_only_skips_musiccoca(tmp_path):
     for i in range(len(source)):
         record = source[i]
         assert record.codes.shape == (1, 25, _RVQ_DEPTH)
-        assert _MUSICCOCA.key not in record.metadata
-        assert EMBEDDING_KEY not in record.metadata
+        assert _MUSICCOCA.key not in record.extras
+        assert EMBEDDING_KEY not in record.extras
         # Provenance is still recorded.
         assert "clip_" in record.filepath[0]
 
@@ -600,13 +600,13 @@ def test_export_trim_frames_crops_codes_and_channels(tmp_path):
     for i in range(len(source)):
         record = source[i]
         assert record.codes.shape == (1, 30, _RVQ_DEPTH)
-        assert record.metadata[_MUSICCOCA.key].shape == (1, 30, 12)
-        assert record.metadata[_cfg.PIANOROLL_WITH_ONSETS.key].shape == (1, 30, 128)
+        assert record.extras[_MUSICCOCA.key].shape == (1, 30, 12)
+        assert record.extras[_cfg.PIANOROLL_WITH_ONSETS.key].shape == (1, 30, 128)
         # The drum channel is not synthesized (see pianoroll.py).
-        assert _cfg.DRUM_PIANOROLL.key not in record.metadata
+        assert _cfg.DRUM_PIANOROLL.key not in record.extras
         # Non-frame metadata is left at full size.
-        assert record.metadata[EMBEDDING_KEY].shape == (1, 768)
-        assert record.metadata["offset"].shape == (1,)
+        assert record.extras[EMBEDDING_KEY].shape == (1, 768)
+        assert record.offset.shape == (1,)
 
 
 def test_export_trim_frames_too_large_raises(tmp_path):
@@ -697,14 +697,14 @@ def test_export_time_varying_musiccoca(tmp_path):
     for i in range(len(source)):
         record = source[i]
         assert record.codes.shape == (1, 50, _RVQ_DEPTH)
-        style = record.metadata[_MUSICCOCA.key]
+        style = record.extras[_MUSICCOCA.key]
         assert style.shape == (1, 50, 12) and style.dtype == np.int16
         # Time-varying: NOT a single row broadcast across the frames.
         assert not np.array_equal(style[0], np.tile(style[0, 0], (50, 1)))
         # Pianoroll is kept on the 50 target frames (aligned to codes/style).
-        assert record.metadata[_cfg.PIANOROLL_WITH_ONSETS.key].shape == (1, 50, 128)
+        assert record.extras[_cfg.PIANOROLL_WITH_ONSETS.key].shape == (1, 50, 128)
         # No single per-clip embedding is written in time-varying mode.
-        assert EMBEDDING_KEY not in record.metadata
+        assert EMBEDDING_KEY not in record.extras
 
 
 def test_export_time_varying_no_target_frames_raises(tmp_path):
@@ -742,7 +742,7 @@ def test_export_time_varying_coarse_hop(tmp_path):
     )
     source = TreeDataSource(out)
     record = source[0]
-    style = record.metadata[_MUSICCOCA.key][0]  # [500, 12]
+    style = record.extras[_MUSICCOCA.key][0]  # [500, 12]
     assert style.shape == (500, 12)
 
     # Frame indices:
@@ -766,3 +766,30 @@ def test_export_time_varying_coarse_hop(tmp_path):
     assert not np.array_equal(style[0], style[200])
     assert not np.array_equal(style[200], style[400])
 
+
+
+def test_multiprocess_export_respects_num_samples(tmp_path):
+    """`num_samples` is a total, not a per-worker quota.
+
+    grain's ``mp_prefetch`` replays the whole upstream pipeline inside each
+    worker, so a limit placed above it is applied once per worker and the export
+    writes ``worker_count * num_samples`` records off the unbounded
+    (``num_epochs=None``) source. Every other test in this file runs
+    single-process, where that bug is invisible.
+    """
+    from audiotree.sources import TreeDataSource
+
+    audio_dir = _write_wavs(tmp_path, [2.5, 1.0, 2.0])
+    num_samples = 6
+    out = export_tree_dataset(
+        audio_dir,
+        tmp_path / "dataset",
+        codec=FakeCodec(),
+        style_model=MockMusicCoCa(),
+        num_samples=num_samples,
+        duration=1.0,
+        batch_size=4,          # not a divisor of 6: also covers the partial-batch trim
+        worker_count=2,
+    )
+
+    assert len(TreeDataSource(out)) == num_samples

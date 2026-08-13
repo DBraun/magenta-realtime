@@ -39,7 +39,7 @@ def _example(codebooks, seed=1):
         waveform=None,
         sample_rate=48_000,
         codes=rng.randint(0, 16, (1, FRAMES, 4)).astype(np.int32),
-        metadata={
+        extras={
             "musiccoca_embedding": embedding[None],
             _MUSICCOCA.key: np.tile(tokens, (1, FRAMES, 1)),
         },
@@ -76,15 +76,15 @@ def test_jitter_rewrites_tokens_consistently(codebooks):
     out = StyleEmbeddingJitter(2.0, codebooks=codebooks).random_map(
         wav, np.random.default_rng(0)
     )
-    emb = out.metadata["musiccoca_embedding"]
-    tokens = out.metadata[_MUSICCOCA.key]
+    emb = out.extras["musiccoca_embedding"]
+    tokens = out.extras[_MUSICCOCA.key]
     assert emb.shape == (1, DIM)
     assert tokens.shape == (1, FRAMES, DEPTH)
     # The stored embedding and tokens stay mutually consistent.
     np.testing.assert_array_equal(tokens[0, 0], rvq_tokenize(emb[0], codebooks))
     np.testing.assert_array_equal(tokens, np.tile(tokens[:, :1], (1, FRAMES, 1)))
     # Large jitter on a tiny codebook should move at least one level.
-    assert not np.array_equal(tokens, wav.metadata[_MUSICCOCA.key])
+    assert not np.array_equal(tokens, wav.extras[_MUSICCOCA.key])
 
 
 def test_tiny_jitter_keeps_tokens(codebooks):
@@ -94,14 +94,14 @@ def test_tiny_jitter_keeps_tokens(codebooks):
         wav, np.random.default_rng(0)
     )
     np.testing.assert_array_equal(
-        out.metadata[_MUSICCOCA.key], wav.metadata[_MUSICCOCA.key]
+        out.extras[_MUSICCOCA.key], wav.extras[_MUSICCOCA.key]
     )
 
 
 def test_noop_without_embedding(codebooks):
     wav = _example(codebooks)
     wav = wav.replace(
-        metadata={_MUSICCOCA.key: wav.metadata[_MUSICCOCA.key]}
+        extras={_MUSICCOCA.key: wav.extras[_MUSICCOCA.key]}
     )
     out = StyleEmbeddingJitter(2.0, codebooks=codebooks).random_map(
         wav, np.random.default_rng(0)

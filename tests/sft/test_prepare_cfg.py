@@ -41,7 +41,7 @@ def _example(frames=50, with_cfg=False):
         waveform=None,
         sample_rate=48_000,
         codes=rng.randint(0, 1024, (1, frames, 4)).astype(np.int32),
-        metadata=metadata,
+        extras=metadata,
     )
 
 
@@ -49,8 +49,8 @@ def test_samples_missing_channels_constant_over_frames():
     wav = _example(frames=50)
     out = PrepareCFG().random_map(wav, np.random.default_rng(0))
 
-    mc = out.metadata[_KEY_MC_NOTES]
-    drums = out.metadata[_KEY_DRUMS]
+    mc = out.extras[_KEY_MC_NOTES]
+    drums = out.extras[_KEY_DRUMS]
     assert mc.shape == (1, 50, 2) and mc.dtype == np.int32
     assert drums.shape == (1, 50, 1) and drums.dtype == np.int32
     # Constant across the example's frames (inference holds CFG constant).
@@ -65,7 +65,7 @@ def test_sampling_varies_across_examples():
     rng = np.random.default_rng(0)
     rows = {
         tuple(PrepareCFG().random_map(_example(), rng)
-              .metadata[_KEY_MC_NOTES][0, 0])
+              .extras[_KEY_MC_NOTES][0, 0])
         for _ in range(16)
     }
     assert len(rows) > 1  # a fresh scale per example, not one global value
@@ -74,8 +74,8 @@ def test_sampling_varies_across_examples():
 def test_present_channels_pass_through():
     wav = _example(with_cfg=True)
     out = PrepareCFG().random_map(wav, np.random.default_rng(0))
-    np.testing.assert_array_equal(out.metadata[_KEY_MC_NOTES], 7)
-    np.testing.assert_array_equal(out.metadata[_KEY_DRUMS], 3)
+    np.testing.assert_array_equal(out.extras[_KEY_MC_NOTES], 7)
+    np.testing.assert_array_equal(out.extras[_KEY_DRUMS], 3)
 
 
 def test_fixed_scales_use_discretize_cfg():
@@ -84,13 +84,13 @@ def test_fixed_scales_use_discretize_cfg():
         _example(frames=10), np.random.default_rng(0)
     )
     # Same binning as the inference systems: step 0.2 / 1.0, range [-1, 7].
-    assert out.metadata[_KEY_MC_NOTES][0, 0, 0] == discretize_cfg(3.0, 0.2, 40)
-    assert out.metadata[_KEY_MC_NOTES][0, 0, 1] == discretize_cfg(1.0, 0.2, 40)
-    assert out.metadata[_KEY_DRUMS][0, 0, 0] == discretize_cfg(1.0, 1.0, 8)
+    assert out.extras[_KEY_MC_NOTES][0, 0, 0] == discretize_cfg(3.0, 0.2, 40)
+    assert out.extras[_KEY_MC_NOTES][0, 0, 1] == discretize_cfg(1.0, 0.2, 40)
+    assert out.extras[_KEY_DRUMS][0, 0, 0] == discretize_cfg(1.0, 1.0, 8)
     # token = (scale + 1) / step, so 3.0 -> 20, 1.0 -> 10 / 2.
-    assert out.metadata[_KEY_MC_NOTES][0, 0, 0] == 20
-    assert out.metadata[_KEY_MC_NOTES][0, 0, 1] == 10
-    assert out.metadata[_KEY_DRUMS][0, 0, 0] == 2
+    assert out.extras[_KEY_MC_NOTES][0, 0, 0] == 20
+    assert out.extras[_KEY_MC_NOTES][0, 0, 1] == 10
+    assert out.extras[_KEY_DRUMS][0, 0, 0] == 2
 
 
 def test_fixed_scales_wrong_width_raises():

@@ -39,6 +39,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import functools
+import glob
 import os
 import time
 from typing import Optional
@@ -271,6 +272,36 @@ def make_adapter_update_fn():
 # separate post-training step (TODO).
 
 # %%
+_ADAPTER_GLOB = "sft_nnx_adapters_step_*.safetensors"
+
+
+def _prune_adapter_files(output_dir: str, max_to_keep: int) -> None:
+    """Keep only the newest ``max_to_keep`` portable adapter files.
+
+    ``max_to_keep`` bounds the orbax *resume* checkpoints, but the distributable
+    adapter safetensors written alongside them had no retention policy at all —
+    one per ``save_every_steps`` accumulated for the whole run (a 3840-step run
+    at the default cadence left 153 files / 3.5 GB). Retention is the same knob
+    for both: the newest few are what anyone wants to ship or evaluate.
+
+    ``max_to_keep <= 0`` means "keep everything", matching orbax's convention.
+    Files are ordered by the step parsed from the name, not lexically, so
+    ``step_960`` is correctly older than ``step_1000``.
+    """
+    if max_to_keep is None or max_to_keep <= 0:
+        return
+    paths = glob.glob(os.path.join(output_dir, _ADAPTER_GLOB))
+    if len(paths) <= max_to_keep:
+        return
+
+    def _step_of(path: str) -> int:
+        stem = os.path.basename(path).removesuffix(".safetensors")
+        return int(stem.rsplit("_", 1)[1])
+
+    for stale in sorted(paths, key=_step_of)[:-max_to_keep]:
+        os.remove(stale)
+
+
 def open_ckpt_manager(ckpt_dir: str, max_to_keep: int) -> ocp.CheckpointManager:
     options = ocp.CheckpointManagerOptions(
         save_interval_steps=1,
@@ -669,8 +700,12 @@ def train(config: SFTConfig, spec, *, writer=None, model=None,
     losses = []
     train_metrics = utils.make_train_metrics()  # window-averaged between log steps
     t0 = time.time()
+    # Tracks the last step actually executed, so the summary below is honest
+    # when early stopping (or an exception) ends the loop before total_steps.
+    last_step = start_step
     try:
         for step in range(start_step + 1, config.total_steps + 1):
+            last_step = step
             with report.timed("data") if step > 1 else contextlib.nullcontext():
                 # Pre-tokenized data -> no codec. For audio data, pass a
                 # SpectroStream via ``codec=`` to encode samples->tokens on device.
@@ -797,6 +832,7 @@ def train(config: SFTConfig, spec, *, writer=None, model=None,
                                   else "default")),
                         base_checkpoint=checkpoint_path,
                     )
+                    _prune_adapter_files(config.output_dir, config.max_to_keep)
 
             # Periodic generated-audio sample for qualitative monitoring.
             if config.sample_every_steps and step % config.sample_every_steps == 0:
@@ -808,7 +844,12 @@ def train(config: SFTConfig, spec, *, writer=None, model=None,
         if hasattr(writer, "close"):
             writer.close()
 
-    print(f"[sft] {config.total_steps} steps in {time.time()-t0:.1f}s")
+    ran = last_step - start_step
+    stopped_early = (
+        "" if last_step >= config.total_steps
+        else f" (stopped at step {last_step} of {config.total_steps})"
+    )
+    print(f"[sft] {ran} steps in {time.time()-t0:.1f}s{stopped_early}")
     return losses
 
 
@@ -877,15 +918,16 @@ class AudioSampleWriter:
 
         ``record`` is the batched ``AudioTree`` the source was built from; its
         public ``.filepath`` (``List[str]``, empty when the export carried no
-        provenance) + ``metadata['offset']`` are stashed so the generated
-        sample can be traced to the track its conditioning came from.
+        provenance) and ``.offset`` (``None`` likewise) are stashed so the
+        generated sample can be traced to the track its conditioning came from.
+        Both live in AudioTree's own provenance container, not in ``extras``.
         """
         if self._source is None:
             frames = min(source.shape[1], self.SAMPLE_SECONDS * 25)
             self._source = jnp.asarray(source[:1, :frames])
             if record is not None:
                 filepaths = record.filepath  # List[str]; [] if no provenance
-                offsets = record.metadata.get("offset")
+                offsets = record.offset  # None if no provenance
                 self._provenance = {
                     "filepath": filepaths[0] if filepaths else None,
                     "offset": (float(np.asarray(offsets)[0])

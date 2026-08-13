@@ -509,7 +509,7 @@ def main() -> None:
         # comparable to the MUSICAL text-prompt arm A. If E is ALSO incoherent,
         # audio-derived MusicCoCa tokens are out-of-distribution vs the text path.
         emb = np.fromfile(
-            str(Path(args.eval_dir) / "metadata.musiccoca_embedding.bin"),
+            str(Path(args.eval_dir) / "extras.musiccoca_embedding.bin"),
             dtype=np.float32, count=768,
         )
         from magenta_rt import musiccoca

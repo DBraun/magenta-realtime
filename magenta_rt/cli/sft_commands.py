@@ -36,7 +36,7 @@ import sys
 import tempfile
 import time
 
-from audiotree import SaliencyParams
+from audiotree import ExcerptConfig
 from audiotree.sources import TreeDataSource
 import click
 import numpy as np
@@ -183,18 +183,18 @@ def _build_codec_and_style(backend: str, checkpoint: str | None):
                    "training) instead of one per-clip embedding broadcast. "
                    "Draw extra audio: --duration = head-trim + target + "
                    "lookahead (e.g. --duration 31 --head-trim 1 "
-                   "--mulan-lookahead 10 -> a 20 s target).")
+                   "--musiccoca-lookahead 10 -> a 20 s target).")
 @click.option("--musiccoca-hop", type=float, default=1.0,
               help="MusicCoCa recompute hop in seconds for --musiccoca-time-"
                    "varying (default 1.0). Coarser is "
                    "far cheaper and near-identical.")
-@click.option("--mulan-lookahead", type=float, default=10.0,
+@click.option("--musiccoca-lookahead", type=float, default=10.0,
               help="Seconds of look-ahead audio after the target for the "
                    "leading MusicCoCa windows (should equal clip_length, 10 s).")
 @click.option("--head-trim", type=float, default=0.0,
               help="Seconds of codes/conditioning discarded from the START "
                    "(codec warm-up; only used with --musiccoca-time-varying).")
-@click.option("--mulan-window-subbatch", type=int, default=128,
+@click.option("--musiccoca-window-subbatch", type=int, default=128,
               help="Max leading windows embedded per MusicCoCa call (GPU mem).")
 @click.option("--musiccoca-scan", is_flag=True,
               help="Stream the time-varying MusicCoCa windows through nnx.scan "
@@ -206,12 +206,12 @@ def export(sources, out, num_samples, duration, batch_size, seed, val_fraction,
            val_num_samples, split_seed, backend, checkpoint,
            style_prompt, transcribe, mt3_batch_size, workers,
            worker_buffer_size, extensions, loudness_cutoff, saliency_tries,
-           musiccoca_time_varying, musiccoca_hop, mulan_lookahead, head_trim,
+           musiccoca_time_varying, musiccoca_hop, musiccoca_lookahead, head_trim,
            musiccoca_window_subbatch, musiccoca_scan, profile):
     """Precompute an SFT TreeWriter dataset from directories of audio files.
 
     Draws salient fixed-duration excerpts from the source directories
-    (``audiotree.sources.create_audio_dataset`` + ``SaliencyParams``; grain
+    (``audiotree.sources.create_audio_dataset`` + ``ExcerptConfig``; grain
     workers read + preprocess audio in parallel) and encodes each batch with the real
     SpectroStream codec + MusicCoCa style model (+ optionally MT3 piano-roll
     transcription) via :func:`magenta_rt.sft.export.export_tree_dataset`.
@@ -281,10 +281,10 @@ def export(sources, out, num_samples, duration, batch_size, seed, val_fraction,
             batch_size=mt3_batch_size, backend=backend
         )
 
-    saliency_params = SaliencyParams(
-        enabled=True,
+    excerpt = ExcerptConfig(
+        strategy="loudest",
         num_tries=saliency_tries,
-        loudness_cutoff=loudness_cutoff,
+        lufs_cutoff=loudness_cutoff,
     )
     base_metadata = {
         "sources": [str(s) for s in sources],
@@ -303,12 +303,12 @@ def export(sources, out, num_samples, duration, batch_size, seed, val_fraction,
                 codec=codec, style_model=style_model, transcriber=transcriber,
                 files=files, num_samples=n_samples, duration=duration,
                 batch_size=batch_size, seed=seed,
-                saliency_params=saliency_params, extensions=extensions,
+                excerpt=excerpt, extensions=extensions,
                 worker_count=workers,
                 worker_buffer_size=worker_buffer_size,
                 musiccoca_time_varying=musiccoca_time_varying,
                 musiccoca_hop_seconds=musiccoca_hop,
-                musiccoca_lookahead_seconds=mulan_lookahead,
+                musiccoca_lookahead_seconds=musiccoca_lookahead,
                 head_trim_seconds=head_trim,
                 musiccoca_window_subbatch=musiccoca_window_subbatch,
                 musiccoca_scan=musiccoca_scan,
@@ -422,7 +422,7 @@ def generate(model, checkpoint, data_dir, out, tag, indices, adapters,
     PR = _cfg.PIANOROLL_WITH_ONSETS.key
 
     def build_source(record):
-        e = {k: v[0].copy() for k, v in record.metadata.items() if v[0].ndim >= 2}
+        e = {k: v[0].copy() for k, v in record.extras.items() if v[0].ndim >= 2}
         T = e[_cfg.MUSICCOCA.key].shape[0]
         if condition == "style" and PR in e:
             e[PR] = np.full_like(e[PR], -1)  # drop notes -> unconditional
@@ -478,7 +478,7 @@ def generate(model, checkpoint, data_dir, out, tag, indices, adapters,
         soundfile.write(wav_path, audio * (0.9 / peak if peak > 0 else 1.0), 48_000)
 
         # --- provenance sidecar -------------------------------------------
-        meta = record.metadata
+        meta = record.extras
         filepaths = record.filepath  # List[str] (empty if no filepath metadata)
         filepath = filepaths[0] if filepaths else "(unknown)"
         offset = float(meta["offset"][0]) if "offset" in meta else float("nan")
@@ -529,7 +529,7 @@ def print_record(record, index: int) -> None:
     filepaths = record.filepath  # List[str], empty if no filepath metadata
     if filepaths:
         print(f'  Source:    {filepaths[0]}')
-    offset = record.metadata.get('offset')
+    offset = record.extras.get('offset')
     if offset is not None:
         print(f'  Offset:    {float(offset[0]):.1f}s')
 
@@ -543,7 +543,7 @@ def print_record(record, index: int) -> None:
         print(f'    Range:     [{codes.min()}, {codes.max()}]')
         print(f'    Unique:    {len(np.unique(codes))} / 1024 codes used')
 
-    style = record.metadata.get(MUSICCOCA_KEY)
+    style = record.extras.get(MUSICCOCA_KEY)
     if style is not None:
         style = style[0]
         print('\n  MusicCoCa tokens:')
@@ -552,12 +552,12 @@ def print_record(record, index: int) -> None:
         constant = bool((style == style[0]).all())
         print(f'    Constant over frames: {constant}')
 
-    emb = record.metadata.get(EMBEDDING_KEY)
+    emb = record.extras.get(EMBEDDING_KEY)
     if emb is not None:
         print(f'\n  MusicCoCa embedding: shape {emb.shape},'
               f' norm {np.linalg.norm(emb[0]):.2f}')
 
-    roll = record.metadata.get(PIANOROLL_KEY)
+    roll = record.extras.get(PIANOROLL_KEY)
     if roll is None:
         print('\n  Pianoroll: (not stored — exported without a transcriber)')
     else:
@@ -580,7 +580,7 @@ def print_record(record, index: int) -> None:
                   f'active frames={len(poly_active)}/{T} '
                   f'({100 * len(poly_active) / T:.0f}%)')
 
-    drums = record.metadata.get(DRUMS_KEY)
+    drums = record.extras.get(DRUMS_KEY)
     if drums is not None:
         print(f'  Drums:     {int(drums.sum())} onset frames')
 
@@ -590,7 +590,7 @@ def plot_pianoroll(record, title: str, output_path: str | None = None):
     import matplotlib.colors as mcolors
     import matplotlib.pyplot as plt
 
-    roll = record.metadata.get(PIANOROLL_KEY)
+    roll = record.extras.get(PIANOROLL_KEY)
     if roll is None:
         print('  ⚠️  No pianoroll channel to plot (exported without --transcribe).')
         return

@@ -50,7 +50,7 @@ def test_tree_source_reconstructs_audiotrees(tmp_path, with_audio):
 
     for i in range(len(src)):
         record = src[i]
-        for value in record.metadata.values():
+        for value in record.extras.values():
             assert value.shape[0] == 1  # batch-1 leading axis
         if with_audio:
             assert record.codes is None

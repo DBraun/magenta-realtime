@@ -43,7 +43,7 @@ def _time_export(codec, files, *, num_samples, duration, trim_frames,
         None, out, codec=codec, style_model=None, transcriber=None,
         files=files, num_samples=num_samples, duration=duration,
         trim_frames=trim_frames, batch_size=batch_size, seed=0,
-        saliency_params=saliency, worker_count=workers,
+        excerpt=saliency, worker_count=workers,
         worker_buffer_size=1, save_embedding=False,
     )
     elapsed = time.time() - start
@@ -64,14 +64,14 @@ def _time_export(codec, files, *, num_samples, duration, trim_frames,
 def main(itunes_xml, duration, trim_seconds, batch_sizes, workers_list,
          n_small, n_large):
     """Benchmark export throughput across a batch_size x workers grid."""
-    from audiotree import SaliencyParams
+    from audiotree import ExcerptConfig
 
     from magenta_rt.sft.export import FRAME_RATE
 
     batch_sizes = [int(x) for x in batch_sizes.split(",")]
     workers_list = [int(x) for x in workers_list.split(",")]
     trim_frames = round(trim_seconds * FRAME_RATE)
-    saliency = SaliencyParams(enabled=True, num_tries=8, loudness_cutoff=-60.0)
+    saliency = ExcerptConfig(strategy="loudest", num_tries=8, lufs_cutoff=-60.0)
 
     files = [f for f in _files_from_itunes_xml(itunes_xml)
              if os.path.isfile(f)]

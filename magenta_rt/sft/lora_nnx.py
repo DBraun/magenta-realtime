@@ -68,6 +68,19 @@ def _kernel_in_norm(kernel: jax.Array) -> jax.Array:
     return jnp.sqrt((k * k).sum(axis=-2) + _DORA_EPS * _DORA_EPS)
 
 
+def _exact_matmul(a: jax.Array, b: jax.Array) -> jax.Array:
+    """``a @ b`` at full fp32 precision, regardless of the global default.
+
+    Merging is a one-time weight-space fold whose result is written into an
+    exported checkpoint, so it must not inherit the accelerator's fast-matmul
+    default: on Ampere-class GPUs (and TPU) JAX contracts fp32 matmuls in TF32
+    /bf16 unless told otherwise, which would bake a truncated ``A@B`` into the
+    merged kernel and break bit-exactness against the unmerged forward pass.
+    The adapter matrices are tiny (rank r), so the exact contraction is free.
+    """
+    return jnp.matmul(a, b, precision=jax.lax.Precision.HIGHEST)
+
+
 def _dora_kernel(kernel: jax.Array, delta: jax.Array, magnitude: jax.Array,
                  *, strength: float, scale: float, out_dtype) -> jax.Array:
     """DoRA effective kernel for an ``(..., in, out)`` NNX kernel.
@@ -321,7 +334,7 @@ def merge_lora_into_base(model: nnx.Module) -> int:
                 base = child.base
                 kdtype = base.kernel[...].dtype
                 if child.dora:
-                    delta = child.lora_a[...] @ child.lora_b[...]  # (..., in, out)
+                    delta = _exact_matmul(child.lora_a[...], child.lora_b[...])  # (..., in, out)
                     base.kernel[...] = _dora_kernel(
                         base.kernel[...], delta, child.magnitude[...],
                         strength=child.lora_strength, scale=child.scale,
@@ -330,7 +343,7 @@ def merge_lora_into_base(model: nnx.Module) -> int:
                 else:
                     delta = (
                         (child.scale * child.lora_strength)
-                        * child.lora_a[...] @ child.lora_b[...]
+                        * _exact_matmul(child.lora_a[...], child.lora_b[...])
                     ).astype(kdtype)
                     # Broadcast handles vmapped (leading L axis) and plain shapes.
                     base.kernel[...] = base.kernel[...] + delta
