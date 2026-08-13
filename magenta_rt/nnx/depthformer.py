@@ -173,8 +173,8 @@ class DepthformerDecoder(nnx.Module):
             self.dropout_rng = None
 
         self.step_counter = DecodeState(jnp.array(0, dtype=jnp.int32))
-        self.previous_frame = DecodeState(nnx.data(None))
-        self.rng_state = DecodeState(nnx.data(None))  # `init_streaming` will set this to nnx.Rngs
+        self.previous_frame = DecodeState(None)
+        self.rng_state = DecodeState(None)  # `init_streaming` will set this to nnx.Rngs
 
         if embedder is None:
             raise ValueError("embedder is required")
